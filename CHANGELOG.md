@@ -4,7 +4,11 @@ Versions here are assigned in commit order: minor is a plain integer
 counter (0.1 for the first commit, 0.2 for the second, and so on); major
 is only ever advanced manually. Newest at top.
 
-## 0.9 (uncommitted)
+## 0.10 
+- Add ttyd browser-based terminal to the image (LAN-only, password-gated via TTYD_CREDENTIAL; starts only if a credential is set).
+- Add ttyd presence check to the container smoke test.
+
+## 0.9
 
 - Fixed graceful shutdown: `entrypoint.sh` previously ended with a
   synchronous `tail -f /dev/null` as PID 1, which does not receive a
