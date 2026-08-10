@@ -46,6 +46,7 @@ check "gh present" docker exec "$NAME" gh --version
 check "node present" docker exec "$NAME" node -v
 check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
+check "ttyd present" docker exec "$NAME" ttyd --version
 
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
