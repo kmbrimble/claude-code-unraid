@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# As PID 1, the kernel won't apply default signal dispositions unless we
+# install explicit handlers, so without this SIGTERM/SIGINT would be
+# ignored and the container would hang until the runtime's kill timeout.
+trap 'exit 0' SIGTERM SIGINT
+
 # Configure GitHub auth from GH_TOKEN (supplied via CA template variable).
 if [ -n "${GH_TOKEN:-}" ]; then
   git config --global user.name "${GIT_USER_NAME:-Butler Bot}"
@@ -15,4 +20,11 @@ fi
 tmux new-session -d -s claude -c /projects || true
 
 echo "Container ready. Attach with: docker exec -it claude-code tmux attach -t claude"
-tail -f /dev/null
+
+# Block here to keep the container alive. Use a backgrounded sleep-loop
+# with `wait` (rather than a synchronous `tail -f`) so the trap above can
+# actually run and exit promptly when a signal arrives.
+while true; do
+  sleep 1 &
+  wait $!
+done
