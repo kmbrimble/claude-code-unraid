@@ -19,11 +19,24 @@ fi
 # Keep a long lived tmux server running for the agent session.
 tmux new-session -d -s claude -c /projects || true
 
+# Optionally start the browser-based terminal (ttyd), for LAN use.
+# SAFETY: ttyd is started ONLY if TTYD_CREDENTIAL (format user:password) is
+# set, so there is never an unauthenticated web shell. ttyd serves a real
+# shell into a container that has the Docker socket (effectively host root),
+# so this must stay on the trusted LAN and always be password protected.
+if [ -n "${TTYD_CREDENTIAL:-}" ]; then
+  ttyd --writable --port 7681 --credential "${TTYD_CREDENTIAL}" \
+    tmux new-session -A -s claude -c /projects &
+  echo "ttyd web terminal started on port 7681 (password protected)."
+else
+  echo "No TTYD_CREDENTIAL set; browser terminal disabled."
+fi
+
 echo "Container ready. Attach with: docker exec -it claude-code tmux attach -t claude"
 
-# Block here to keep the container alive. Use a backgrounded sleep-loop
-# with `wait` (rather than a synchronous `tail -f`) so the trap above can
-# actually run and exit promptly when a signal arrives.
+# Block here to keep the container alive. Use a backgrounded sleep-loop with
+# `wait` (rather than a synchronous `tail -f`) so the trap above can run and
+# exit promptly when a signal arrives.
 while true; do
   sleep 1 &
   wait $!
