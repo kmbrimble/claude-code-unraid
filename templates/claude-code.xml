@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>claude-code</Name>
+  <Repository>ghcr.io/kmbrimble/claude-code-unraid:latest</Repository>
+  <Registry>https://ghcr.io/</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <ReadMe/>
+  <Overview>Autonomous Claude Code agent, unRAID managed.</Overview>
+  <Category>Productivity:</Category>
+  <WebUI>http://[IP]:[PORT:7681]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>1786395332</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Agent home" Target="/root" Default="" Mode="rw" Description="Persists .claude auth, agents, settings" Type="Path" Display="always" Required="true" Mask="{8}">/mnt/user/appdata/claude-code/home</Config>
+  <Config Name="Projects" Target="/projects" Default="" Mode="rw" Description="Working area for repositories the agent may edit" Type="Path" Display="always" Required="true" Mask="{8}">/mnt/user/appdata/claude-code/projects</Config>
+  <Config Name="Secrets" Target="/config" Default="" Mode="ro" Description="Read only secrets, for example the HA token file" Type="Path" Display="always" Required="false" Mask="{8}">/mnt/user/appdata/claude-code/config</Config>
+  <Config Name="Docker socket" Target="/var/run/docker.sock" Default="" Mode="rw" Description="Lets the agent control other containers. High privilege." Type="Path" Display="always" Required="false" Mask="{8}">/var/run/docker.sock</Config>
+  <Config Name="HA base URL" Target="HA_BASE_URL" Default="http://192.168.0.21:8123" Mode="" Description="Home Assistant API base" Type="Variable" Display="always" Required="false" Mask="{8}">http://192.168.0.21:8123</Config>
+  <Config Name="GH_TOKEN" Target="GH_TOKEN" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="ttyd Web Terminal" Target="7681" Default="7681" Mode="tcp" Description="" Type="Port" Display="always" Required="false" Mask="false">7681</Config>
+  <Config Name="TTYD Credential" Target="TTYD_CREDENTIAL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <TailscaleStateDir/>
+</Container>
