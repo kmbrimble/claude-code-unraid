@@ -4,18 +4,16 @@ Versions here are assigned in commit order: minor is a plain integer
 counter (0.1 for the first commit, 0.2 for the second, and so on); major
 is only ever advanced manually. Newest at top.
 
-## 0.11 (unreleased)
+## 0.11
 
-**Plan (2026-08-17, resolves #4 — populate README):** `README.md` currently
-holds only the one-line title. Replace it with real content: what this repo
-builds, how to build/run the image locally, the four non-negotiable unRAID
-mounts and the `GH_TOKEN`/`TTYD_CREDENTIAL` env vars from
-`templates/claude-code.xml`, and the personal setup/deploy flow already
-documented in `CLAUDE.md` (push → watch build → force-update in unRAID →
-reattach via `docker exec -it claude-code tmux attach -t claude`).
-Documentation-only change with no code paths to exercise, so `test/smoke.sh`
-does not apply — verification is a manual read-through for factual accuracy
-against `Dockerfile`, `entrypoint.sh`, and `templates/claude-code.xml`.
+- Populated `README.md` (resolves #4): what the image contains, how to
+  build/run it locally, the smoke test, the four non-negotiable unRAID
+  mounts, the env vars read from `templates/claude-code.xml`
+  (`GH_TOKEN`, `TTYD_CREDENTIAL`, `GIT_USER_NAME`/`EMAIL`, `HA_BASE_URL`),
+  how to attach to the agent's `tmux` session, and the push → watch build →
+  force-update → reattach deploy flow from `CLAUDE.md`. Documentation-only;
+  `test/smoke.sh` doesn't apply, verified by manual cross-check against
+  `Dockerfile`, `entrypoint.sh`, and `templates/claude-code.xml`.
 
 ## 0.10
 
