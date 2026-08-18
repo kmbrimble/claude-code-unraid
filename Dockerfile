@@ -20,6 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
 RUN wget -qO /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
     && chmod +x /usr/local/bin/ttyd
 
+# Chromium's OS-level shared libraries (glib, nss, atk, ...), so Playwright
+# can launch Chromium without a per-session `apt-get`/`install-deps`. Only
+# the OS deps are installed here — the Playwright npm package and browser
+# binary are NOT baked in, so each project's own package.json/npx pins the
+# Playwright version it actually wants; only its browser download at test
+# time lands in ~/.cache/ms-playwright (on the persisted home mount).
+RUN npx --yes playwright install-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN npm install -g @anthropic-ai/claude-code claude-auto-retry
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

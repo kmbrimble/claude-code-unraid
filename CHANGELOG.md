@@ -6,15 +6,27 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-Plan: bake Chromium's OS-level shared-library dependencies into the image so
-Playwright/Chromium can launch without a per-session `apt-get`/`install-deps`.
-Add a `test/smoke.sh` check that downloads Chromium via `npx playwright@1.62.1
-install chromium` (the version pinned in terriblebutler's `package.json`) and
-runs `npx playwright@1.62.1 screenshot about:blank`, which fails against the
-current image with a missing shared-object error. Add one `RUN npx --yes
-playwright@1.62.1 install-deps chromium` layer to the Dockerfile (OS deps
-only — no Playwright npm package or browser binary baked in) so that check
-passes.
+## 0.12 (2026-08-18)
+
+- Baked Chromium's OS-level shared libraries (glib, nss, atk, ...) into the
+  image via `RUN npx --yes playwright install-deps chromium`, so
+  Playwright/Chromium can launch inside the container without a per-session
+  `apt-get`/`install-deps` step. Only the OS packages are installed — the
+  Playwright npm package and browser binary are not baked in, so each
+  downstream project's own `package.json`/`npx` still controls which
+  Playwright version and browser binary it uses (the binary lands in
+  `~/.cache/ms-playwright` on the persisted home mount at test time, same as
+  before).
+- Added a `test/smoke.sh` check that downloads Chromium via `npx
+  playwright@1.62.1 install chromium` (the version pinned in
+  terriblebutler's `package.json`) and runs `npx playwright@1.62.1
+  screenshot about:blank`. Confirmed this fails against the pre-change image
+  with `chrome-headless-shell: error while loading shared libraries:
+  libglib-2.0.so.0: cannot open shared object file`, and passes after the
+  Dockerfile change.
+- Image size grew from 1.11 GB to 1.48 GB (+~372 MB) — the cost of baking in
+  Chromium's dependency tree (glib, nss, atk, cups, mesa/DRM libs, X11
+  utilities, fonts, etc.).
 
 ## 0.11
 
