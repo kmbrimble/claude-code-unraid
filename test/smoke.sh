@@ -48,6 +48,17 @@ check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
 check "ttyd present" docker exec "$NAME" ttyd --version
 
+# Chromium's OS-level shared libraries must be baked into the image so
+# Playwright/Chromium runs without a per-session `apt-get`/`install-deps`.
+# This downloads the Chromium *browser binary* via npx (not baked into the
+# image — see Dockerfile comment) and launches it headless; on an image
+# missing the OS deps this fails with an "error while loading shared
+# libraries" / "cannot open shared object file" error from the dynamic linker.
+PLAYWRIGHT_VERSION="1.62.1"
+check "playwright chromium OS deps" docker exec "$NAME" bash -c \
+  "npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium >/tmp/pw-install.log 2>&1 && \
+   npx --yes playwright@${PLAYWRIGHT_VERSION} screenshot about:blank /tmp/pw-smoke.png >/tmp/pw-screenshot.log 2>&1"
+
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
 if docker stop "$NAME" >/dev/null 2>&1; then

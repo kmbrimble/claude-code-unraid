@@ -4,6 +4,18 @@ Versions here are assigned in commit order: minor is a plain integer
 counter (0.1 for the first commit, 0.2 for the second, and so on); major
 is only ever advanced manually. Newest at top.
 
+## [Unreleased]
+
+Plan: bake Chromium's OS-level shared-library dependencies into the image so
+Playwright/Chromium can launch without a per-session `apt-get`/`install-deps`.
+Add a `test/smoke.sh` check that downloads Chromium via `npx playwright@1.62.1
+install chromium` (the version pinned in terriblebutler's `package.json`) and
+runs `npx playwright@1.62.1 screenshot about:blank`, which fails against the
+current image with a missing shared-object error. Add one `RUN npx --yes
+playwright@1.62.1 install-deps chromium` layer to the Dockerfile (OS deps
+only — no Playwright npm package or browser binary baked in) so that check
+passes.
+
 ## 0.11
 
 - Populated `README.md` (resolves #4): what the image contains, how to
