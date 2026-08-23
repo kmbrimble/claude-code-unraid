@@ -34,6 +34,8 @@ RUN npm install -g @anthropic-ai/claude-code claude-auto-retry
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+COPY scripts/claude-wrapper.sh /usr/local/lib/claude-wrapper.sh
+
 WORKDIR /projects
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -19,6 +19,20 @@ fi
 # Keep a long lived tmux server running for the agent session.
 tmux new-session -d -s claude -c /projects || true
 
+# claude-auto-retry's monitor only forks when $TMUX_PANE is set (see
+# src/tmux.js's getCurrentPane()). Its own createTmuxSession() path normally
+# guarantees that, but since we create the session ourselves above, set it
+# explicitly so any shell attaching later (ttyd's `-A`, or a manual `tmux
+# attach`) inherits a correct value regardless of how it attaches.
+tmux set-environment -t claude TMUX_PANE "$(tmux list-panes -t claude -F '#{pane_id}')"
+
+# Ensure ~/.bashrc sources the version-controlled wrapper (scripts/claude-wrapper.sh,
+# copied into the image at build time). Runs on every start so a fresh
+# persisted home-mount volume picks it up automatically.
+if ! grep -q "claude-wrapper.sh" "${HOME}/.bashrc" 2>/dev/null; then
+  echo '[ -f /usr/local/lib/claude-wrapper.sh ] && source /usr/local/lib/claude-wrapper.sh' >> "${HOME}/.bashrc"
+fi
+
 # Optionally start the browser-based terminal (ttyd), for LAN use.
 # SAFETY: ttyd is started ONLY if TTYD_CREDENTIAL (format user:password) is
 # set, so there is never an unauthenticated web shell. ttyd serves a real
