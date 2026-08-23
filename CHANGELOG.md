@@ -6,6 +6,34 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+### Plan (2026-08-23): fix claude-auto-retry monitor not starting; version-control the retry wrapper
+
+- Root cause: `claude-auto-retry`'s `getCurrentPane()` (`src/tmux.js`) reads only
+  `$TMUX_PANE` from the environment, with no fallback. `entrypoint.sh` creates the
+  long-lived tmux session directly (`tmux new-session -d -s claude`), bypassing
+  claude-auto-retry's own `createTmuxSession()` path that normally sets
+  `$TMUX_PANE`. Any shell attaching later (ttyd's `-A`, or a manual `tmux attach`)
+  can therefore start with `$TMUX_PANE` unset, so `launchInteractive()` silently
+  skips forking `monitor.js` — no error, no log entry, `claude` runs normally
+  otherwise. Confirmed via `~/.claude-auto-retry/logs/`: no monitor log at all for
+  a real 22 Aug 2026 rate-limit incident.
+- Fix: in `entrypoint.sh`, immediately after creating the `claude` tmux session,
+  explicitly set `TMUX_PANE` in that session's environment via
+  `tmux set-environment -t claude TMUX_PANE "$(tmux list-panes -t claude -F '#{pane_id}')"`,
+  so any later shell attaching to it inherits a correct value regardless of
+  attach method. Does not touch `node_modules/claude-auto-retry` (third-party,
+  wiped on reinstall).
+- Relocation: move the two wrapper shell functions (`_claude_auto_retry`,
+  `claude`) that currently live only in the untracked `~/.bashrc` (persisted home
+  mount) into a new tracked `scripts/claude-wrapper.sh`, copied into the image and
+  sourced from `~/.bashrc` (entrypoint.sh ensures the sourcing line exists on
+  every start, so a fresh home-mount volume picks it up automatically). Behaviour
+  preserved exactly — this is a relocation, not a logic change.
+- Tests: extend `test/smoke.sh` with a check that `tmux show-environment -t claude
+  TMUX_PANE` inside the running test container returns a real pane id (not
+  "variable not found"), plus checks that `scripts/claude-wrapper.sh` is present
+  in the built image and that `~/.bashrc` sources it.
+
 ## 0.12 (2026-08-18)
 
 - Baked Chromium's OS-level shared libraries (glib, nss, atk, ...) into the

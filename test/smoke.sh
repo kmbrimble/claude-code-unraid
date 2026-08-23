@@ -48,6 +48,25 @@ check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
 check "ttyd present" docker exec "$NAME" ttyd --version
 
+# claude-auto-retry's monitor.js only forks when its getCurrentPane() finds a
+# non-empty $TMUX_PANE. Because entrypoint.sh creates the `claude` tmux session
+# directly (not via claude-auto-retry's own createTmuxSession()), that variable
+# is not set for free — entrypoint.sh must explicitly export it into the
+# session's environment. If this regresses, `tmux show-environment` reports
+# "variable not found" instead of a pane id like "%0", so check for that
+# distinction rather than just a non-empty match.
+TMUX_PANE_VALUE=$(docker exec "$NAME" tmux show-environment -t claude TMUX_PANE 2>&1)
+if [[ "$TMUX_PANE_VALUE" == TMUX_PANE=%* ]]; then
+  echo "PASS: TMUX_PANE set in claude tmux session ($TMUX_PANE_VALUE)"
+  PASS_COUNT=$((PASS_COUNT + 1))
+else
+  echo "FAIL: TMUX_PANE not set in claude tmux session (got: $TMUX_PANE_VALUE)"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+check "claude-wrapper.sh present in image" docker exec "$NAME" test -f /usr/local/lib/claude-wrapper.sh
+check "~/.bashrc sources claude-wrapper.sh" docker exec "$NAME" grep -q "claude-wrapper.sh" /root/.bashrc
+
 # Chromium's OS-level shared libraries must be baked into the image so
 # Playwright/Chromium runs without a per-session `apt-get`/`install-deps`.
 # This downloads the Chromium *browser binary* via npx (not baked into the
