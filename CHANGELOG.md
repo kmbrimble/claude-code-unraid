@@ -6,6 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.14 (2026-08-27)
+
 - Fixed the real cause of issue #9 (auto-retry wrapper never runs), reopened
   after 0.13 didn't actually fix it. 0.13's fix (explicit `TMUX_PANE` via
   `tmux set-environment`) was addressing a symptom that was never actually
