@@ -33,6 +33,17 @@ if ! grep -q "claude-wrapper.sh" "${HOME}/.bashrc" 2>/dev/null; then
   echo '[ -f /usr/local/lib/claude-wrapper.sh ] && source /usr/local/lib/claude-wrapper.sh' >> "${HOME}/.bashrc"
 fi
 
+# tmux starts a pane's shell as a LOGIN shell (`-bash`), and login shells read
+# ~/.bash_profile/~/.bash_login/~/.profile, never ~/.bashrc — so the ensure
+# above is not enough on its own. The persisted home mount is an external
+# host directory with none of those files, so without this, ~/.bashrc (and
+# the claude-auto-retry wrapper it sources) is never actually read in the
+# real pane and every `claude` invocation silently bypasses auto-retry.
+# Standard idiom: make the login shell source ~/.bashrc too.
+if ! grep -q '\.bashrc' "${HOME}/.bash_profile" 2>/dev/null; then
+  echo '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"' >> "${HOME}/.bash_profile"
+fi
+
 # Optionally start the browser-based terminal (ttyd), for LAN use.
 # SAFETY: ttyd is started ONLY if TTYD_CREDENTIAL (format user:password) is
 # set, so there is never an unauthenticated web shell. ttyd serves a real

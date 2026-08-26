@@ -6,6 +6,7 @@ set -uo pipefail
 TAG="claude-code-smoketest:local"
 NAME="cc-smoketest"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOME_DIR="$(mktemp -d)"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -13,6 +14,7 @@ FAIL_COUNT=0
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1
   docker rmi "$TAG" >/dev/null 2>&1
+  rm -rf "$HOME_DIR"
 }
 trap cleanup EXIT
 
@@ -35,7 +37,16 @@ if ! docker build -t "$TAG" "$REPO_ROOT"; then
 fi
 
 echo "Starting container $NAME..."
-if ! docker run -d --name "$NAME" "$TAG" >/dev/null; then
+# /root is bind-mounted from an empty host directory, matching a fresh unRAID
+# appdata home directory on first run: the real deployment's /root is a bind
+# mount from /mnt/user/appdata/claude-code/home, which shadows every dotfile
+# the image bakes into /root (including the base image's own ~/.profile) —
+# a bind mount shows exactly what's on the host, unlike a named Docker volume
+# (which Docker pre-populates from the image on first use, masking this).
+# Without this, the smoke test's /root falls back to the image's baked
+# filesystem, which masks bugs that only show up against an empty persisted
+# home (issue #9).
+if ! docker run -d --name "$NAME" -v "$HOME_DIR:/root" "$TAG" >/dev/null; then
   echo "FAIL"
   exit 1
 fi
@@ -66,6 +77,15 @@ fi
 
 check "claude-wrapper.sh present in image" docker exec "$NAME" test -f /usr/local/lib/claude-wrapper.sh
 check "~/.bashrc sources claude-wrapper.sh" docker exec "$NAME" grep -q "claude-wrapper.sh" /root/.bashrc
+
+# tmux starts a pane's shell as a LOGIN shell (`-bash`), which reads
+# ~/.bash_profile / ~/.profile, never ~/.bashrc — so the ~/.bashrc checks
+# above are necessary but not sufficient: they'd still pass even if the
+# wrapper function never actually loads in the real pane (issue #9). This is
+# the behavioural check that catches that: it runs a real login shell and
+# confirms the `claude` wrapper function is actually defined in it.
+check "claude wrapper function loads in a login shell" \
+  docker exec "$NAME" bash -lc 'declare -f claude >/dev/null'
 
 # Chromium's OS-level shared libraries must be baked into the image so
 # Playwright/Chromium runs without a per-session `apt-get`/`install-deps`.

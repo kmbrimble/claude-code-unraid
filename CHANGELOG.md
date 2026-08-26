@@ -6,6 +6,22 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Plan (issue #9 reopened): 0.13's fix (explicit `TMUX_PANE` via `tmux
+  set-environment`) was addressing a symptom that was never actually broken —
+  tmux already sets `TMUX_PANE` correctly in the pane's real process
+  environment on its own. The actual root cause: `tmux new-session` starts
+  the pane's shell as a *login* shell (`-bash`), and login shells read
+  `~/.bash_profile`/`~/.profile`, never `~/.bashrc` — but this image/home
+  mount has neither file, so `~/.bashrc` (where `entrypoint.sh` sources
+  `scripts/claude-wrapper.sh`) is never read, the `claude` wrapper function
+  is never defined, and every `claude` invocation runs the raw binary
+  directly, bypassing `claude-auto-retry`'s `launcher.js`/`monitor.js`
+  entirely. Fix: `entrypoint.sh` also ensures `~/.bash_profile` sources
+  `~/.bashrc` (the standard idiom), mirroring the existing idempotent
+  `~/.bashrc`-ensure block. `test/smoke.sh` gets a behavioural check —
+  `bash -lc 'declare -f claude'` in a login shell — replacing reliance on
+  the circular `TMUX_PANE` check alone.
+
 ## 0.13 (2026-08-23)
 
 - Fixed `claude-auto-retry`'s monitor never starting: its `getCurrentPane()`
