@@ -6,21 +6,31 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- Plan (issue #9 reopened): 0.13's fix (explicit `TMUX_PANE` via `tmux
-  set-environment`) was addressing a symptom that was never actually broken —
-  tmux already sets `TMUX_PANE` correctly in the pane's real process
-  environment on its own. The actual root cause: `tmux new-session` starts
-  the pane's shell as a *login* shell (`-bash`), and login shells read
-  `~/.bash_profile`/`~/.profile`, never `~/.bashrc` — but this image/home
-  mount has neither file, so `~/.bashrc` (where `entrypoint.sh` sources
-  `scripts/claude-wrapper.sh`) is never read, the `claude` wrapper function
-  is never defined, and every `claude` invocation runs the raw binary
-  directly, bypassing `claude-auto-retry`'s `launcher.js`/`monitor.js`
-  entirely. Fix: `entrypoint.sh` also ensures `~/.bash_profile` sources
-  `~/.bashrc` (the standard idiom), mirroring the existing idempotent
-  `~/.bashrc`-ensure block. `test/smoke.sh` gets a behavioural check —
-  `bash -lc 'declare -f claude'` in a login shell — replacing reliance on
-  the circular `TMUX_PANE` check alone.
+- Fixed the real cause of issue #9 (auto-retry wrapper never runs), reopened
+  after 0.13 didn't actually fix it. 0.13's fix (explicit `TMUX_PANE` via
+  `tmux set-environment`) was addressing a symptom that was never actually
+  broken — tmux already sets `TMUX_PANE` correctly in the pane's real process
+  environment on its own; confirmed live via `/proc/<pane_pid>/environ`. The
+  actual root cause: `tmux new-session` starts the pane's shell as a *login*
+  shell (`-bash`), and login shells read `~/.bash_profile`/`~/.profile`,
+  never `~/.bashrc`. The base image bakes a `~/.profile` that sources
+  `~/.bashrc` (masking the bug in a plain `docker run`), but the real
+  deployment's `/root` is bind-mounted from an external, empty unRAID
+  appdata directory that shadows it entirely — so `~/.bashrc` (where
+  `entrypoint.sh` sources `scripts/claude-wrapper.sh`) was never read, the
+  `claude` wrapper function was never defined, and every `claude` invocation
+  ran the raw binary directly, silently bypassing `claude-auto-retry`'s
+  `launcher.js`/`monitor.js`. Confirmed via process ancestry in the live
+  container: `claude --continue` was a direct child of the pane's `-bash`,
+  not of `node launcher.js`.
+  `entrypoint.sh` now also ensures `~/.bash_profile` sources `~/.bashrc`
+  (the standard idiom), mirroring the existing idempotent `~/.bashrc`-ensure
+  block. `test/smoke.sh` now bind-mounts `/root` from an empty host
+  directory (a named Docker volume would be pre-populated from the image,
+  masking this) to match the real deployment, and adds a behavioural check —
+  `bash -lc 'declare -f claude'` in a real login shell — replacing reliance
+  on the circular `TMUX_PANE` check alone. Confirmed the new check fails
+  against pre-fix `entrypoint.sh` and passes after.
 
 ## 0.13 (2026-08-23)
 
