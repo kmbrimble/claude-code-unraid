@@ -6,6 +6,17 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Plan: add Remote Control auto-launch. `entrypoint.sh` will, after tmux
+  session setup, scan immediate subdirectories of `/projects` and start a
+  detached `claude remote-control` (no tmux, stdout/stderr to
+  `~/claude-remote-logs/<project>.log`) for each one containing a
+  `CLAUDE.md`, skipping others silently. The discovery/launch logic is
+  extracted into `scripts/remote-control-launch.sh` so `test/smoke.sh` can
+  source it and exercise it against a stub `claude` binary without real
+  auth/network. (Parts 1 and 2 of the originating request — the `TMUX_PANE`
+  fix and the wrapper migration to `scripts/claude-wrapper.sh` — were
+  already completed in 0.13/0.14.)
+
 ## 0.14 (2026-08-27)
 
 - Fixed the real cause of issue #9 (auto-retry wrapper never runs), reopened

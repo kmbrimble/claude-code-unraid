@@ -87,6 +87,31 @@ check "~/.bashrc sources claude-wrapper.sh" docker exec "$NAME" grep -q "claude-
 check "claude wrapper function loads in a login shell" \
   docker exec "$NAME" bash -lc 'declare -f claude >/dev/null'
 
+# Remote Control auto-launch: entrypoint.sh scans /projects subdirectories
+# and starts a detached `claude remote-control` for each one containing a
+# CLAUDE.md, skipping the rest. A real `claude remote-control` needs auth and
+# opens a live connection, so this exercises the discovery/launch logic in
+# isolation (scripts/remote-control-launch.sh) against a stub `claude` on
+# $PATH, rather than a real session.
+check "remote-control auto-launch targets only CLAUDE.md dirs" \
+  docker exec "$NAME" bash -c '
+    set -e
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/projects/withmd" "$tmp/projects/withoutmd" "$tmp/stubbin" "$tmp/logs"
+    echo "# test project" > "$tmp/projects/withmd/CLAUDE.md"
+    cat > "$tmp/stubbin/claude" <<STUB
+#!/bin/sh
+echo "\$PWD \$*" >> "$tmp/stub-calls.log"
+STUB
+    chmod +x "$tmp/stubbin/claude"
+    export PATH="$tmp/stubbin:$PATH"
+    source /usr/local/lib/remote-control-launch.sh
+    launch_remote_control_sessions "$tmp/projects" "$tmp/logs"
+    sleep 1
+    grep -q "withmd remote-control" "$tmp/stub-calls.log" &&
+    ! grep -q "withoutmd" "$tmp/stub-calls.log" 2>/dev/null
+  '
+
 # Chromium's OS-level shared libraries must be baked into the image so
 # Playwright/Chromium runs without a per-session `apt-get`/`install-deps`.
 # This downloads the Chromium *browser binary* via npx (not baked into the
