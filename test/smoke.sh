@@ -123,6 +123,34 @@ check "playwright chromium OS deps" docker exec "$NAME" bash -c \
   "npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium >/tmp/pw-install.log 2>&1 && \
    npx --yes playwright@${PLAYWRIGHT_VERSION} screenshot about:blank /tmp/pw-smoke.png >/tmp/pw-screenshot.log 2>&1"
 
+# Android toolchain: JDK, adb and sdkmanager must be present and report sane
+# versions. These are baked into the image (apt for JDK/adb, a cmdline-tools
+# launcher outside the /root bind mount for sdkmanager), so they must survive
+# even against the empty persisted-home mount this test uses.
+check "java present" docker exec "$NAME" java -version
+check "adb present" docker exec "$NAME" adb --version
+check "sdkmanager present" docker exec "$NAME" sdkmanager --version
+
+# ANDROID_SDK_ROOT and GRADLE_USER_HOME must be set and point at existing,
+# writable paths under the persisted home mount (/root), so the SDK/Gradle
+# caches survive a container rebuild instead of re-downloading every time.
+check "ANDROID_SDK_ROOT set and writable" docker exec "$NAME" bash -c \
+  '[ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT" ] && [ -w "$ANDROID_SDK_ROOT" ]'
+check "GRADLE_USER_HOME set and writable" docker exec "$NAME" bash -c \
+  '[ -n "$GRADLE_USER_HOME" ] && [ -d "$GRADLE_USER_HOME" ] && [ -w "$GRADLE_USER_HOME" ]'
+
+# The SDK components themselves (platform 34, build-tools) are NOT baked into
+# the image (multi-GB) — they're installed into the persisted home mount by
+# an idempotent bootstrap script on first run. Run it synchronously here
+# (rather than relying on entrypoint's backgrounded launch) so the test does
+# not race the install, and assert the packages are actually installed
+# (not merely downloadable) via `sdkmanager --list_installed`, with licences
+# already accepted non-interactively.
+check "Android SDK platform 34 + build-tools installed" docker exec "$NAME" bash -c \
+  '/usr/local/lib/android-sdk-bootstrap.sh >/tmp/android-bootstrap.log 2>&1 && \
+   sdkmanager --list_installed 2>/dev/null | grep -q "platforms;android-34" && \
+   sdkmanager --list_installed 2>/dev/null | grep -q "build-tools;"'
+
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
 if docker stop "$NAME" >/dev/null 2>&1; then

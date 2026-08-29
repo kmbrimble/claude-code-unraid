@@ -6,6 +6,29 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Add Android build/debug toolchain: `openjdk-17-jdk-headless`, apt's `adb`/
+  `fastboot` (always-present fallback), and the Android cmdline-tools
+  launcher baked into the image at `/opt/android-cmdline-tools` (outside the
+  `/root` bind mount, so it survives a fresh persisted home). `ANDROID_SDK_ROOT`
+  (`/root/.android-sdk`) and `GRADLE_USER_HOME` (`/root/.gradle`) point at the
+  persisted home mount; an idempotent `android-sdk-bootstrap.sh`, backgrounded
+  from `entrypoint.sh`, installs `platforms;android-34` and matching
+  build-tools via `sdkmanager` and accepts SDK licences non-interactively
+  (`yes | sdkmanager --licenses`) on first run, so the container comes up
+  usable with no manual step and self-heals if the persisted path is empty.
+  `PATH` puts the SDK's `platform-tools` ahead of apt's `adb` once bootstrapped,
+  avoiding an `adb` client/server version mismatch. Verified via `docker
+  inspect` that the live container runs on Docker's `bridge` network (not
+  macvlan), so outbound `adb connect` to the LAN NATs fine. `test/smoke.sh`
+  extended to assert JDK/adb/sdkmanager presence and version, that
+  `ANDROID_SDK_ROOT`/`GRADLE_USER_HOME` exist and are writable, and that the
+  bootstrap actually installs platform 34 + build-tools (`sdkmanager
+  --list_installed`), run synchronously in the test rather than backgrounded.
+  Skipped a throwaway Gradle build at test time (cost of a full Gradle
+  distribution + AGP download for what `--list_installed` already proves);
+  the first real project build via `./gradlew` is the first exercise of that
+  path.
+
 ## 0.15 (2026-08-29)
 
 - Added Remote Control auto-launch. `entrypoint.sh` now, after tmux session
