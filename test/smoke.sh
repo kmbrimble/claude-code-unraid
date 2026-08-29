@@ -30,6 +30,25 @@ check() {
   fi
 }
 
+# Structural checks on the CI workflow and Dockerfile — static, no build
+# needed, so run them first and cheaply. These guard the registry-backed
+# Docker layer cache (the default `docker` driver silently ignores registry
+# cache without buildx) and the npm layer's position (unpinned, so it's the
+# layer most likely to need deliberate invalidation; keeping it after the
+# ~130MB Android cmdline-tools RUN means busting it doesn't drag that layer
+# down too).
+WORKFLOW="$REPO_ROOT/.github/workflows/build.yml"
+check "workflow sets up buildx" bash -c "grep -q 'docker/setup-buildx-action' '$WORKFLOW'"
+check "workflow reads layer cache from buildcache tag" bash -c \
+  "grep -q 'cache-from' '$WORKFLOW' && grep -q 'buildcache' '$WORKFLOW'"
+check "workflow writes layer cache to buildcache tag" bash -c \
+  "grep -q 'cache-to' '$WORKFLOW' && grep -q 'buildcache' '$WORKFLOW'"
+check "npm install -g line sits after the Android cmdline-tools RUN block" bash -c "
+  NPM_LINE=\$(grep -n 'npm install -g @anthropic-ai/claude-code' '$REPO_ROOT/Dockerfile' | head -1 | cut -d: -f1)
+  CMDLINE_LINE=\$(grep -n 'Android cmdline-tools' '$REPO_ROOT/Dockerfile' | head -1 | cut -d: -f1)
+  [ -n \"\$NPM_LINE\" ] && [ -n \"\$CMDLINE_LINE\" ] && [ \"\$NPM_LINE\" -gt \"\$CMDLINE_LINE\" ]
+"
+
 echo "Building image $TAG from $REPO_ROOT..."
 if ! docker build -t "$TAG" "$REPO_ROOT"; then
   echo "FAIL"

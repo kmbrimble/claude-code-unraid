@@ -6,6 +6,35 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Add registry-backed Docker layer caching to CI and reorder the Dockerfile so
+  the unpinned `npm install -g` layer no longer drags the ~130MB Android
+  cmdline-tools layer down with it whenever a new Claude Code release busts
+  the cache. Files: `.github/workflows/build.yml` (add
+  `docker/setup-buildx-action`, since the default `docker` driver silently
+  ignores registry cache; add `cache-from`/`cache-to` on `build-push-action`
+  pointing at a `buildcache` tag on the same GHCR package,
+  `ghcr.io/kmbrimble/claude-code-unraid:buildcache`, with `mode=max` so
+  intermediate stages are cached too, not just the final layer — chosen over
+  the GitHub Actions cache backend because that has a 10GB per-repo cap and a
+  7-day eviction window this large/irregularly-rebuilt image would sit
+  awkwardly against), `Dockerfile` (move `RUN npm install -g
+  @anthropic-ai/claude-code claude-auto-retry` to immediately after the
+  Android cmdline-tools `RUN` block — repository-reader confirmed the npm
+  step reads no ENV/ARG and nothing later in the build depends on its
+  binaries at build time, only at container runtime). Deliberately out of
+  scope: a build ARG to bust the npm layer on demand — considered, deferred.
+  Tests: `test/smoke.sh` gets three new static/structural checks (workflow
+  declares buildx setup, declares both cache directions against the
+  `buildcache` tag, and the Dockerfile's npm line appears after the
+  cmdline-tools RUN block) that run before the docker build, no container
+  needed; confirmed all three fail against current main first. Expected: the
+  first build after this merges has nothing to read from the cache yet, so
+  that pull is exactly as slow as today; the saving starts on the second
+  build, where apt/JDK, Playwright-deps, and cmdline-tools layers should
+  report "Already exists" on the unRAID pull.
+
+## 0.16 (2026-08-29)
+
 - Add Android build/debug toolchain: `openjdk-17-jdk-headless`, apt's `adb`/
   `fastboot` (always-present fallback), and the Android cmdline-tools
   launcher baked into the image at `/opt/android-cmdline-tools` (outside the
