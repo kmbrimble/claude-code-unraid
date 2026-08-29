@@ -35,6 +35,7 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 COPY scripts/claude-wrapper.sh /usr/local/lib/claude-wrapper.sh
+COPY scripts/remote-control-launch.sh /usr/local/lib/remote-control-launch.sh
 
 WORKDIR /projects
 

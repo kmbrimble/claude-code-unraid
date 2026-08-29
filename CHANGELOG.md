@@ -6,16 +6,38 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- Plan: add Remote Control auto-launch. `entrypoint.sh` will, after tmux
-  session setup, scan immediate subdirectories of `/projects` and start a
-  detached `claude remote-control` (no tmux, stdout/stderr to
-  `~/claude-remote-logs/<project>.log`) for each one containing a
-  `CLAUDE.md`, skipping others silently. The discovery/launch logic is
-  extracted into `scripts/remote-control-launch.sh` so `test/smoke.sh` can
-  source it and exercise it against a stub `claude` binary without real
-  auth/network. (Parts 1 and 2 of the originating request — the `TMUX_PANE`
-  fix and the wrapper migration to `scripts/claude-wrapper.sh` — were
-  already completed in 0.13/0.14.)
+## 0.15 (2026-08-29)
+
+- Added Remote Control auto-launch. `entrypoint.sh` now, after tmux session
+  setup, scans immediate subdirectories of `/projects` and starts a detached
+  `claude remote-control` (no tmux pane/window; stdout/stderr redirected to
+  `~/claude-remote-logs/<project>.log`) for each one containing a root-level
+  `CLAUDE.md`, silently skipping the rest — a project only starts receiving
+  an auto-launched session once its `CLAUDE.md` is written, matching how
+  every project so far has actually been onboarded. Runs once at start and
+  never blocks the entrypoint's own startup or keep-alive loop. Spawn mode
+  (e.g. "same-dir") is a one-time interactive choice the CLI persists per
+  project on its actual first launch, so this never passes `--spawn` or
+  tries to guess it — it relies on whatever was chosen manually for the
+  three projects already in use.
+- The discovery/launch logic is extracted into
+  `scripts/remote-control-launch.sh` (`launch_remote_control_sessions`),
+  copied into the image at `/usr/local/lib/remote-control-launch.sh` and
+  sourced by `entrypoint.sh`, specifically so it can be tested without a
+  real `claude` binary.
+- Extended `test/smoke.sh` with a check that sources
+  `remote-control-launch.sh` inside the running container, points `$PATH`
+  at a stub `claude` script, and runs the discovery loop against a temp
+  directory tree (one subdirectory with a `CLAUDE.md`, one without).
+  Confirmed it fails before `scripts/remote-control-launch.sh` existed and
+  passes after. A real `claude remote-control` session actually connecting
+  is NOT covered automatically (it needs live auth and a network
+  connection) — after deploying, manually confirm with `docker exec -it
+  claude-code cat ~/claude-remote-logs/<project>.log` for a known
+  `CLAUDE.md` project, and check the Claude desktop app sees the session.
+- Parts 1 (`TMUX_PANE` fix) and 2 (wrapper migration to
+  `scripts/claude-wrapper.sh`) of the originating request were already
+  completed in 0.13/0.14 — no further change needed for those.
 
 ## 0.14 (2026-08-27)
 

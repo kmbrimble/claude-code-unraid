@@ -44,6 +44,15 @@ if ! grep -q '\.bashrc' "${HOME}/.bash_profile" 2>/dev/null; then
   echo '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"' >> "${HOME}/.bash_profile"
 fi
 
+# Auto-launch a detached `claude remote-control` (no tmux) for every project
+# directory that has been onboarded (signalled by a CLAUDE.md at its root) —
+# the deliberate signal that a project is ready to be worked on autonomously.
+# Runs once at container start; spawn mode is a one-time interactive choice
+# the CLI persists per project on its actual first launch, so this never
+# passes --spawn or waits on the process.
+source /usr/local/lib/remote-control-launch.sh
+launch_remote_control_sessions /projects "${HOME}/claude-remote-logs"
+
 # Optionally start the browser-based terminal (ttyd), for LAN use.
 # SAFETY: ttyd is started ONLY if TTYD_CREDENTIAL (format user:password) is
 # set, so there is never an unauthenticated web shell. ttyd serves a real
