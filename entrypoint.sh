@@ -53,6 +53,18 @@ fi
 source /usr/local/lib/remote-control-launch.sh
 launch_remote_control_sessions /projects "${HOME}/claude-remote-logs"
 
+# Create ANDROID_SDK_ROOT/GRADLE_USER_HOME on the persisted home mount up
+# front (fast, synchronous) so they exist and are writable immediately, even
+# before the SDK download below finishes. Self-heals an empty/fresh mount.
+mkdir -p "${ANDROID_SDK_ROOT}" "${GRADLE_USER_HOME}"
+
+# Install/verify the Android SDK platform + build-tools into ANDROID_SDK_ROOT.
+# Backgrounded because a first-run download is ~1GB and would otherwise delay
+# "Container ready" by minutes; the script is idempotent so subsequent starts
+# just verify and exit quickly. test/smoke.sh runs the same script
+# synchronously instead of racing this background job.
+/usr/local/lib/android-sdk-bootstrap.sh >"${HOME}/android-sdk-bootstrap.log" 2>&1 &
+
 # Optionally start the browser-based terminal (ttyd), for LAN use.
 # SAFETY: ttyd is started ONLY if TTYD_CREDENTIAL (format user:password) is
 # set, so there is never an unauthenticated web shell. ttyd serves a real

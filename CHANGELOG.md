@@ -27,7 +27,17 @@ is only ever advanced manually. Newest at top.
   Skipped a throwaway Gradle build at test time (cost of a full Gradle
   distribution + AGP download for what `--list_installed` already proves);
   the first real project build via `./gradlew` is the first exercise of that
-  path.
+  path. `android-sdk-bootstrap.sh` takes a `flock` on the SDK root before
+  invoking `sdkmanager`, so the entrypoint's backgrounded first-run bootstrap
+  and the smoke test's synchronous invocation of the same idempotent script
+  never write the SDK root concurrently. Release-APK signing is covered by
+  `apksigner`, which ships inside `build-tools;34.0.0`. SDK licences are
+  accepted non-interactively at first-run bootstrap rather than at image
+  build time — nothing SDK-side is installed at build time, only the small
+  cmdline-tools launcher, so there is nothing to license until then. Image
+  size grew from 1.36 GB to 1.79 GB (+412 MB: `openjdk-17-jdk-headless`,
+  `adb`/`fastboot`, and the cmdline-tools launcher); no CA template change
+  needed since everything else lives under the existing `/root` mapping.
 
 ## 0.15 (2026-08-29)
 

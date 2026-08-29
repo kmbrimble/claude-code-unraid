@@ -129,7 +129,10 @@ check "playwright chromium OS deps" docker exec "$NAME" bash -c \
 # even against the empty persisted-home mount this test uses.
 check "java present" docker exec "$NAME" java -version
 check "adb present" docker exec "$NAME" adb --version
-check "sdkmanager present" docker exec "$NAME" sdkmanager --version
+# sdkmanager (this cmdline-tools version) requires --sdk_root explicitly on
+# every invocation, including --version — it does not read ANDROID_SDK_ROOT.
+check "sdkmanager present" docker exec "$NAME" bash -c \
+  'sdkmanager --version --sdk_root="$ANDROID_SDK_ROOT"'
 
 # ANDROID_SDK_ROOT and GRADLE_USER_HOME must be set and point at existing,
 # writable paths under the persisted home mount (/root), so the SDK/Gradle
@@ -148,8 +151,9 @@ check "GRADLE_USER_HOME set and writable" docker exec "$NAME" bash -c \
 # already accepted non-interactively.
 check "Android SDK platform 34 + build-tools installed" docker exec "$NAME" bash -c \
   '/usr/local/lib/android-sdk-bootstrap.sh >/tmp/android-bootstrap.log 2>&1 && \
-   sdkmanager --list_installed 2>/dev/null | grep -q "platforms;android-34" && \
-   sdkmanager --list_installed 2>/dev/null | grep -q "build-tools;"'
+   INSTALLED=$(sdkmanager --list_installed --sdk_root="$ANDROID_SDK_ROOT" 2>/dev/null) && \
+   echo "$INSTALLED" | grep -q "platforms;android-34" && \
+   echo "$INSTALLED" | grep -q "build-tools;"'
 
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
