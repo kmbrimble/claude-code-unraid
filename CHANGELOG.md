@@ -23,15 +23,26 @@ is only ever advanced manually. Newest at top.
   step reads no ENV/ARG and nothing later in the build depends on its
   binaries at build time, only at container runtime). Deliberately out of
   scope: a build ARG to bust the npm layer on demand — considered, deferred.
-  Tests: `test/smoke.sh` gets three new static/structural checks (workflow
+  Tests: `test/smoke.sh` gets four new static/structural checks (workflow
   declares buildx setup, declares both cache directions against the
   `buildcache` tag, and the Dockerfile's npm line appears after the
   cmdline-tools RUN block) that run before the docker build, no container
-  needed; confirmed all three fail against current main first. Expected: the
-  first build after this merges has nothing to read from the cache yet, so
-  that pull is exactly as slow as today; the saving starts on the second
-  build, where apt/JDK, Playwright-deps, and cmdline-tools layers should
-  report "Already exists" on the unRAID pull.
+  needed; confirmed all four fail against current main first. `provenance:
+  false` added to the build step — buildx enables provenance attestation by
+  default (the old `docker` driver couldn't), which would otherwise change
+  the pushed `:latest` from a bare manifest to an OCI image index; disabled
+  to keep this change purely about cache/layer ordering, not artifact shape.
+  Expected: the first build after this merges has nothing to read from the
+  cache yet, so that pull is exactly as slow as today; the saving starts on
+  the second build, where apt/JDK, Playwright-deps, and cmdline-tools layers
+  should report "Already exists" on the unRAID pull. Runtime consequence to
+  note: from the second cached build onward, pushes to main no longer
+  refresh the `claude-code`/`claude-auto-retry` npm install by themselves —
+  that layer now only reruns when its own `RUN` line changes or the
+  `buildcache` tag is deleted from GHCR, so a new Claude Code release needs
+  one of those to actually land in the image (a deliberate trade-off; a
+  build ARG to bust this layer on demand was considered and explicitly
+  deferred).
 
 ## 0.16 (2026-08-29)
 

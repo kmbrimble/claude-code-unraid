@@ -30,8 +30,6 @@ RUN wget -qO /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/downlo
 RUN npx --yes playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code claude-auto-retry
-
 # Android cmdline-tools (sdkmanager), pinned version. Baked at /opt, NOT under
 # /root, because /root is bind-mounted from the persisted appdata home at
 # runtime and would shadow anything the image put there (see issue #9). The
@@ -45,6 +43,12 @@ RUN mkdir -p /opt/android-cmdline-tools \
     && unzip -q /tmp/cmdline-tools.zip -d /opt/android-cmdline-tools \
     && mv /opt/android-cmdline-tools/cmdline-tools /opt/android-cmdline-tools/latest \
     && rm /tmp/cmdline-tools.zip
+
+# Unpinned, so it's the layer most likely to need deliberate invalidation
+# when a new Claude Code release should be picked up. Kept below the larger
+# baked layers (apt, ttyd, Playwright deps, cmdline-tools) so busting it only
+# costs re-running this one small layer, not dragging any of those down too.
+RUN npm install -g @anthropic-ai/claude-code claude-auto-retry
 
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 # ANDROID_SDK_ROOT/GRADLE_USER_HOME live on the persisted home mount (/root)

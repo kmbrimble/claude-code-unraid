@@ -18,8 +18,24 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Registry-backed cache needs the buildx driver — the default `docker`
+      # driver silently ignores cache-from/cache-to.
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ghcr.io/kmbrimble/claude-code-unraid:latest
+          # Registry-backed layer cache on a sibling `buildcache` tag of the
+          # same GHCR package, rather than the GitHub Actions cache backend
+          # (10GB per-repo cap, evicts entries unused for 7 days — an awkward
+          # fit for an image this size that rebuilds irregularly). mode=max
+          # caches intermediate build stages too, not just the final layer.
+          cache-from: type=registry,ref=ghcr.io/kmbrimble/claude-code-unraid:buildcache
+          cache-to: type=registry,ref=ghcr.io/kmbrimble/claude-code-unraid:buildcache,mode=max
+          # buildx enables provenance attestation by default, which the old
+          # docker driver couldn't produce — that would change the pushed
+          # artifact from a bare manifest to an OCI image index. Disabled to
+          # keep this change purely about cache/layer ordering, not artifact
+          # shape.
+          provenance: false
