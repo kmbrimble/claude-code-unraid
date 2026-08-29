@@ -6,6 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.17 (2026-08-29)
+
 - Add registry-backed Docker layer caching to CI and reorder the Dockerfile so
   the unpinned `npm install -g` layer no longer drags the ~130MB Android
   cmdline-tools layer down with it whenever a new Claude Code release busts
