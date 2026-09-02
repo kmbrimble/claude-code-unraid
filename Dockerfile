@@ -2,10 +2,22 @@ FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Docker CLI: this container only ever needs the CLIENT (it talks to the
+# unRAID host's much newer daemon over the mounted /var/run/docker.sock and
+# must never run its own daemon). Debian bookworm's `docker.io` ships a stale
+# 20.10 client that predates `docker compose`/`docker buildx` v2 plugin
+# syntax, so pull the client + plugins from Docker's own apt repo instead —
+# deliberately NOT `docker-ce`/`containerd.io`/`docker-ce-rootless-extras`,
+# which are the daemon.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tmux git curl ca-certificates python3 openssh-client jq \
-      docker.io \
       openjdk-17-jdk-headless adb fastboot unzip \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      docker-ce-cli docker-compose-plugin docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (for autonomous push and build-watching)

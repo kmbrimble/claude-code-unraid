@@ -6,16 +6,25 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- (2026-09-02) Plan: replace Debian bookworm's `docker.io` (ships Docker CLI
-  20.10.24+dfsg1, predates `docker compose`/`docker buildx` v2 plugin syntax)
+## 0.18 (2026-09-02)
+
+- (2026-09-02) Replaced Debian bookworm's `docker.io` (ships Docker CLI
+  20.10.24+dfsg1, predates `docker compose`/`docker buildx` v2 plugin syntax —
+  broke a Cowork session driving this container via `claude-code-connector`)
   with the official Docker CE apt repo's `docker-ce-cli` +
-  `docker-compose-plugin` + `docker-buildx-plugin` (client only — no
-  `docker-ce`/`containerd.io` daemon packages, since this container only
-  talks to the unRAID host's daemon over the mounted socket). Files:
-  `Dockerfile` (swap the `docker.io` line in the first `RUN apt-get install`
-  block for the Docker apt-repo keyring/source setup + package list, same
-  layer), `test/smoke.sh` (new checks: `docker --version` major >= 27,
-  `docker compose version` exits 0, `docker buildx version` exits 0).
+  `docker-compose-plugin` + `docker-buildx-plugin`, client only — deliberately
+  NOT `docker-ce`/`containerd.io`/`docker-ce-rootless-extras` (the daemon),
+  since this container only ever talks to the unRAID host's daemon over the
+  mounted `/var/run/docker.sock`. `Dockerfile`: swapped `docker.io` out of the
+  first `RUN apt-get install` block for the Docker apt-repo keyring
+  (`/etc/apt/keyrings/docker.asc`, `signed-by`) + source list + package
+  install, kept in the same layer as before (apt lists still removed once at
+  the end). Now: `docker --version` → 29.7.2 (was 20.10.24), `docker compose
+  version`/`docker buildx version` both exit 0. `test/smoke.sh`: three new
+  checks (docker CLI major >= 27 parsed and asserted with a clear failure
+  message, `docker compose version`, `docker buildx version`). Confirmed all
+  three fail against the pre-change image (27/30 passed, `docker.io`'s 20.10
+  client); full smoke run green after the change, 30/30.
 
 - (2026-09-02) Add `claude-code-connector`: an MCP server (Streamable HTTP,
   port 8765) baked into the image that lets Claude Cowork / the desktop app
