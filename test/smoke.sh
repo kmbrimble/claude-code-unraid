@@ -79,6 +79,23 @@ check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
 check "ttyd present" docker exec "$NAME" ttyd --version
 
+# This container only ever needs a Docker CLIENT (it talks to the unRAID
+# host's daemon over the mounted socket) but Debian bookworm's `docker.io`
+# ships a 20.10 client that predates the `docker compose`/`docker buildx` v2
+# plugin syntax — confirmed to break a Cowork session driving this container.
+# Must be the official Docker CE apt repo's client + plugins instead.
+DOCKER_VERSION_OUTPUT=$(docker exec "$NAME" docker --version 2>&1)
+DOCKER_MAJOR=$(echo "$DOCKER_VERSION_OUTPUT" | grep -oP 'Docker version \K[0-9]+' | head -1)
+if [ -n "$DOCKER_MAJOR" ] && [ "$DOCKER_MAJOR" -ge 27 ]; then
+  echo "PASS: docker CLI major version >= 27 ($DOCKER_VERSION_OUTPUT)"
+  PASS_COUNT=$((PASS_COUNT + 1))
+else
+  echo "FAIL: docker CLI major version >= 27 (got: $DOCKER_VERSION_OUTPUT)"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+check "docker compose plugin present" docker exec "$NAME" docker compose version
+check "docker buildx plugin present" docker exec "$NAME" docker buildx version
+
 # claude-auto-retry's monitor.js only forks when its getCurrentPane() finds a
 # non-empty $TMUX_PANE. Because entrypoint.sh creates the `claude` tmux session
 # directly (not via claude-auto-retry's own createTmuxSession()), that variable
