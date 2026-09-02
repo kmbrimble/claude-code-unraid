@@ -50,6 +50,17 @@ RUN mkdir -p /opt/android-cmdline-tools \
 # costs re-running this one small layer, not dragging any of those down too.
 RUN npm install -g @anthropic-ai/claude-code claude-auto-retry
 
+# claude-code-connector: MCP server (Streamable HTTP) that lets Claude Cowork
+# drive the `claude` CLI in this container. Source is vendored at connector/;
+# built here into /opt (NOT under /root, which is shadowed by the persisted
+# home bind-mount at runtime). Lockfile-pinned, so this layer is stable.
+# Started by entrypoint.sh, and only when CONNECTOR_TOKEN is set.
+WORKDIR /opt/claude-code-connector
+COPY connector/package.json connector/package-lock.json connector/tsconfig.json ./
+COPY connector/src ./src
+RUN npm ci --no-audit --no-fund && npm run build && npm prune --omit=dev
+EXPOSE 8765
+
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 # ANDROID_SDK_ROOT/GRADLE_USER_HOME live on the persisted home mount (/root)
 # so the downloaded SDK components and Gradle's dependency cache survive

@@ -6,6 +6,36 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- (2026-09-02) Add `claude-code-connector`: an MCP server (Streamable HTTP,
+  port 8765) baked into the image that lets Claude Cowork / the desktop app
+  drive the `claude` CLI in this container — list projects and sessions,
+  start/resume sessions, run shell commands, poll long jobs. Plan: vendor the
+  source at `connector/` (public repo, not a separate private one: the image
+  is public on ghcr so the compiled connector is public regardless, the
+  source holds no secrets, and a private repo would force the public CI build
+  to carry a PAT); build it in the `Dockerfile` into
+  `/opt/claude-code-connector`; start it from `entrypoint.sh` as a second
+  background process, ONLY when `CONNECTOR_TOKEN` is set (same rule as ttyd —
+  `run_command` is arbitrary shell in a container with the Docker socket);
+  `PROJECTS_ROOT=/projects` (existing mount, no new mapping);
+  `SKIP_PERMISSIONS=1` default because headless `-p` runs cannot answer
+  prompts, and `~/.claude/settings.json` deny rules still apply under
+  `--dangerously-skip-permissions`; `IS_SANDBOX=1` on the connector process
+  only, because the CLI refuses `--dangerously-skip-permissions` as root
+  without it; add port 8765 + `CONNECTOR_TOKEN` to `templates/claude-code.xml`.
+  Env is scoped to the connector process in `entrypoint.sh` rather than
+  image-wide `ENV`, so a global `PORT` doesn't leak into every dev server the
+  agent runs. Tests: `test/smoke.sh` runs the container with a token and
+  checks `/healthz`, MCP `initialize` (200 + `mcp-session-id`), 401 with a
+  missing or wrong token, and that the connector does NOT listen when no
+  token is set. Red baseline confirmed by running the new check bodies
+  against the live (pre-change) container; full smoke run green, 27/27.
+  Source fixes vs the handed-over version: drop `--verbose` (with
+  `--output-format json` it emits an array of every message, not the result
+  object, so `result`/`session_id` came back empty against the real CLI);
+  tighten `safeProjectPath` so `/projects-evil` no longer passes a
+  `startsWith("/projects")` check.
+
 ## 0.17 (2026-08-29)
 
 - Add registry-backed Docker layer caching to CI and reorder the Dockerfile so

@@ -51,6 +51,9 @@ committing to a full smoke run.
    smoke test guards this.
 6. **Do not remove or relax the permission deny list** in `~/.claude/settings.json` behaviour
    assumptions. Note that file lives in the persisted home mapping, not the image.
+7. **The MCP connector (`connector/`, port 8765) must only start when `CONNECTOR_TOKEN` is
+   set.** Its `run_command` tool is arbitrary shell in a container holding the Docker socket.
+   The smoke test guards this; do not weaken it.
 
 ## Deploy and verify
 

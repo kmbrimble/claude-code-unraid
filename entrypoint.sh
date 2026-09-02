@@ -78,6 +78,25 @@ else
   echo "No TTYD_CREDENTIAL set; browser terminal disabled."
 fi
 
+# Optionally start claude-code-connector (MCP over HTTP on port 8765) so
+# Claude Cowork can drive the `claude` CLI in this container.
+# SAFETY: started ONLY if CONNECTOR_TOKEN is set. Its run_command tool is an
+# arbitrary shell in a container holding the Docker socket, so the bearer
+# token is the entire security boundary; never run it unauthenticated.
+# Runs as root, same as the tmux session, so it sees the same ~/.claude.
+# SKIP_PERMISSIONS=1 because headless `claude -p` cannot answer permission
+# prompts; the deny list in ~/.claude/settings.json still applies. The CLI
+# refuses --dangerously-skip-permissions as root unless IS_SANDBOX=1, which
+# is true here (a container) and is scoped to this process only. Job state
+# is in-memory, so an image update/restart drops running jobs.
+if [ -n "${CONNECTOR_TOKEN:-}" ]; then
+  PORT=8765 HOST=0.0.0.0 PROJECTS_ROOT=/projects SKIP_PERMISSIONS=1 IS_SANDBOX=1 \
+    node /opt/claude-code-connector/dist/index.js >"${HOME}/claude-code-connector.log" 2>&1 &
+  echo "claude-code-connector started on port 8765 (bearer token required)."
+else
+  echo "No CONNECTOR_TOKEN set; claude-code-connector disabled."
+fi
+
 echo "Container ready. Attach with: docker exec -it claude-code tmux attach -t claude"
 
 # Block here to keep the container alive. Use a backgrounded sleep-loop with

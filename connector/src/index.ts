@@ -50,7 +50,7 @@ const jobs = new Map<string, Job>();
 
 function safeProjectPath(p: string): string {
   const abs = path.resolve(PROJECTS_ROOT, p);
-  if (!abs.startsWith(PROJECTS_ROOT)) throw new Error(`Path escapes PROJECTS_ROOT: ${p}`);
+  if (abs !== PROJECTS_ROOT && !abs.startsWith(PROJECTS_ROOT + path.sep)) throw new Error(`Path escapes PROJECTS_ROOT: ${p}`);
   return abs;
 }
 
@@ -158,7 +158,9 @@ function claudeArgs(o: {
   systemPrompt?: string;
   permissionMode?: string;
 }): string[] {
-  const a = ["-p", "--output-format", "json", "--verbose"];
+  // No --verbose: with --output-format json it turns the output into an array
+  // of every message rather than the single result object we parse.
+  const a = ["-p", "--output-format", "json"];
   if (o.resume) a.push("--resume", o.resume);
   if (o.sessionId) a.push("--session-id", o.sessionId);
   if (o.model) a.push("--model", o.model);

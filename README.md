@@ -66,6 +66,7 @@ migrating existing data — see `CLAUDE.md` for details.
 |--------------------|----------|--------------------------------------------------------------------------|
 | `GH_TOKEN`         | No       | GitHub token. If set, `entrypoint.sh` runs `gh auth setup-git` so `git push` and `gh` work non-interactively. Without it, autonomous pushes are disabled. |
 | `TTYD_CREDENTIAL`  | Yes      | `user:password` for the browser-based `ttyd` terminal on port `7681`. `ttyd` only starts if this is set, so there is never an unauthenticated web shell — see the warning below. |
+| `CONNECTOR_TOKEN`  | No       | Bearer token for the MCP connector on port `8765` (see [`connector/README.md`](connector/README.md)). The connector only starts if this is set. Its `run_command` tool is arbitrary shell in this container, so treat it like `TTYD_CREDENTIAL`: strong token, trusted LAN only. |
 | `GIT_USER_NAME`    | No       | Defaults to `Butler Bot`.                                                |
 | `GIT_USER_EMAIL`   | No       | Defaults to `butler-bot@users.noreply.github.com`.                       |
 | `HA_BASE_URL`      | No       | Home Assistant API base, for agent tasks that touch Home Assistant.     |
@@ -88,6 +89,10 @@ Alternatively, if `TTYD_CREDENTIAL` is set, browse to `http://<unraid-ip>:7681` 
 `tmux` session in a browser terminal, password-gated by that credential. `ttyd` serves a real
 shell into a container that holds the Docker socket — effectively host root — so only expose
 port 7681 on a trusted LAN, and always set a strong `TTYD_CREDENTIAL`.
+
+If `CONNECTOR_TOKEN` is set, Claude Cowork (or another Claude Code) can drive the agent over
+MCP at `http://<unraid-ip>:8765/mcp` with that bearer token — list and resume its sessions,
+start new ones, run commands. Details in [`connector/README.md`](connector/README.md).
 
 ## Deploying a change to this repo
 

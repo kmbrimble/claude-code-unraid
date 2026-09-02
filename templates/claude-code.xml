@@ -31,5 +31,7 @@
   <Config Name="GH_TOKEN" Target="GH_TOKEN" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="ttyd Web Terminal" Target="7681" Default="7681" Mode="tcp" Description="" Type="Port" Display="always" Required="false" Mask="false">7681</Config>
   <Config Name="TTYD Credential" Target="TTYD_CREDENTIAL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Connector (MCP)" Target="8765" Default="8765" Mode="tcp" Description="claude-code-connector MCP endpoint at http://[IP]:8765/mcp" Type="Port" Display="always" Required="false" Mask="false">8765</Config>
+  <Config Name="CONNECTOR_TOKEN" Target="CONNECTOR_TOKEN" Default="" Mode="" Description="Bearer token for the MCP connector. Leave empty to disable it." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <TailscaleStateDir/>
 </Container>

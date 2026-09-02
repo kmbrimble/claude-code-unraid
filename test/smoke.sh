@@ -65,7 +65,8 @@ echo "Starting container $NAME..."
 # Without this, the smoke test's /root falls back to the image's baked
 # filesystem, which masks bugs that only show up against an empty persisted
 # home (issue #9).
-if ! docker run -d --name "$NAME" -v "$HOME_DIR:/root" "$TAG" >/dev/null; then
+CONNECTOR_TOKEN="smoketest-token"
+if ! docker run -d --name "$NAME" -v "$HOME_DIR:/root" -e CONNECTOR_TOKEN="$CONNECTOR_TOKEN" "$TAG" >/dev/null; then
   echo "FAIL"
   exit 1
 fi
@@ -173,6 +174,37 @@ check "Android SDK platform 34 + build-tools installed" docker exec "$NAME" bash
    INSTALLED=$(sdkmanager --list_installed --sdk_root="$ANDROID_SDK_ROOT" 2>/dev/null) && \
    echo "$INSTALLED" | grep -q "platforms;android-34" && \
    echo "$INSTALLED" | grep -q "build-tools;"'
+
+# claude-code-connector: the MCP server that lets Claude Cowork drive the CLI
+# in this container. Built into /opt/claude-code-connector and started by
+# entrypoint.sh on port 8765. Checked from inside the container so the test
+# doesn't depend on host port publishing. `run_command` is arbitrary shell in
+# a container holding the Docker socket, so the bearer token is the whole
+# security story: 401 without it, and no listener at all when CONNECTOR_TOKEN
+# is unset (same rule as ttyd).
+MCP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}'
+check "connector /healthz responds" docker exec "$NAME" bash -c \
+  'curl -sf http://127.0.0.1:8765/healthz | grep -q "\"ok\":true"'
+check "connector MCP initialize returns 200 + mcp-session-id" docker exec "$NAME" bash -c \
+  "curl -s -i http://127.0.0.1:8765/mcp -H 'content-type: application/json' \
+     -H 'accept: application/json, text/event-stream' \
+     -H 'authorization: Bearer $CONNECTOR_TOKEN' -d '$MCP_INIT' \
+   | tee /tmp/mcp-init.txt | grep -q '^HTTP/1.1 200' && grep -qi '^mcp-session-id:' /tmp/mcp-init.txt"
+check "connector rejects missing bearer token with 401" docker exec "$NAME" bash -c \
+  "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/mcp \
+     -H 'content-type: application/json' -d '$MCP_INIT')\" = 401 ]"
+check "connector rejects wrong bearer token with 401" docker exec "$NAME" bash -c \
+  "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/mcp \
+     -H 'content-type: application/json' -H 'authorization: Bearer wrong' -d '$MCP_INIT')\" = 401 ]"
+
+NOTOKEN_NAME="${NAME}-notoken"
+NOTOKEN_HOME="$(mktemp -d)"
+docker run -d --name "$NOTOKEN_NAME" -v "$NOTOKEN_HOME:/root" "$TAG" >/dev/null 2>&1
+sleep 3
+check "connector does not listen when CONNECTOR_TOKEN is unset" docker exec "$NOTOKEN_NAME" bash -c \
+  '! curl -sf http://127.0.0.1:8765/healthz >/dev/null'
+docker rm -f "$NOTOKEN_NAME" >/dev/null 2>&1
+rm -rf "$NOTOKEN_HOME"
 
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
