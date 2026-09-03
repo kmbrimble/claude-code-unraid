@@ -6,7 +6,10 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- (2026-09-03) Plan: container hygiene, three fixes.
+## 0.19 (2026-09-03)
+
+- (2026-09-03) Container hygiene, three fixes, live-verified against the
+  running container.
   1. `scripts/claude-wrapper.sh`'s `claude()` silently no-ops under non-TTY
      stdin (`script -c` runs its command via `$SHELL`, which falls back to
      dash outside tmux, where the exported bash function isn't visible) —
@@ -14,7 +17,13 @@ is only ever advanced manually. Newest at top.
      call `_claude_auto_retry "$@"` directly instead; for the interactive
      path, force `SHELL=/bin/bash` and add `script -e` so the real exit
      status propagates, and build the `-c` command string with `printf %q` so
-     arguments containing spaces survive.
+     arguments containing spaces survive. Also found live: even with that
+     fixed, `claude-auto-retry`'s `launcher.js` itself requires a real
+     terminal for anything except `-p`/`--print` (its non-print modes spawn
+     and attach to a *new* nested tmux session) — `_claude_auto_retry` now
+     degrades to plain `command claude "$@"` for the non-print, no-TTY case
+     only, so headless `-p` calls keep the retry benefit and interactive/tmux
+     usage is unaffected.
   2. `Dockerfile`: add `procps` to the first `apt-get install` block (`ps`,
      `free`, `top`, `pgrep` are currently missing).
   3. New `scripts/remote-log-cap.sh`, sourced and backgrounded from
