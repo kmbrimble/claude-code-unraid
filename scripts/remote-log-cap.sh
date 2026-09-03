@@ -22,10 +22,20 @@ cap_log_file() {
   local size
   size=$(stat -c %s "$log" 2>/dev/null) || return 0
   [ "$size" -gt "$max_bytes" ] || return 0
+  # head_bytes + marker + tail_bytes must land STRICTLY under max_bytes, or
+  # the next pass sees the file still over the cap and rewrites it again
+  # forever. Clamp here rather than trust callers, so every caller gets a
+  # size that reaches a stable fixed point after one pass.
+  local marker=$'\n... [log truncated by container log cap] ...\n'
+  local budget=$((max_bytes - ${#marker} - 1))
+  [ "$budget" -lt 0 ] && budget=0
+  [ "$head_bytes" -gt "$budget" ] && head_bytes=$budget
+  local remaining=$((budget - head_bytes))
+  [ "$tail_bytes" -gt "$remaining" ] && tail_bytes=$remaining
   local tmp
   tmp=$(mktemp) || return 0
   { head -c "$head_bytes" "$log"
-    printf '\n... [log truncated by container log cap] ...\n'
+    printf '%s' "$marker"
     tail -c "$tail_bytes" "$log"
   } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   cat "$tmp" >"$log" 2>/dev/null
@@ -35,11 +45,15 @@ cap_log_file() {
 cap_remote_control_logs() {
   local log_dir="$1"
   local max_bytes="${REMOTE_CONTROL_LOG_MAX_BYTES:-20971520}"
-  local half=$((max_bytes / 2))
+  # The head only needs to cover the launch/auth/connection lines and any
+  # startup error, which is a few hundred KB at most; the rest of the budget
+  # goes to the tail, which is what you actually read when diagnosing a live
+  # problem. cap_log_file clamps this down further for small max_bytes.
+  local head_bytes=262144
   local f
   for f in "$log_dir"/*.log; do
     [ -e "$f" ] || continue
-    cap_log_file "$f" "$max_bytes" "$half" "$half" || true
+    cap_log_file "$f" "$max_bytes" "$head_bytes" "$max_bytes" || true
   done
 }
 

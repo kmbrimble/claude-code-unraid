@@ -186,30 +186,45 @@ STUB
 # Remote Control repaints its status banner to stdout roughly once a second
 # via cursor-up escapes, which only overwrite in a real TTY — against a log
 # file every repaint just appends, so left alone these grow unbounded
-# (791MB/7 days observed live). scripts/remote-log-cap.sh's cap_log_file must
-# shrink an oversized log in place: this tests the function directly against
-# a fixture file (no real remote-control session needed), and asserts the
-# shrink happens on the SAME inode (`stat -c %i` unchanged) since the session
-# process holds an open O_APPEND fd on the log — an mv/rm-based approach
-# would leave it writing to a detached, now-invisible inode.
-check "remote-log-cap shrinks an oversized log in place, keeps head, same inode" \
+# (791MB/7 days observed live). scripts/remote-log-cap.sh's cap_remote_control_logs
+# must shrink an oversized log in place: this tests the real entry point (its
+# actual head/tail split, not hand-picked proportions) against a fixture
+# directory, honouring REMOTE_CONTROL_LOG_MAX_BYTES so a 20MB file needn't be
+# generated. It asserts the shrink happens on the SAME inode (`stat -c %i`
+# unchanged) since the session process holds an open O_APPEND fd on the log —
+# an mv/rm-based approach would leave it writing to a detached, now-invisible
+# inode — and that a second pass over an already-capped log is a no-op: if
+# head+marker+tail could still land over the cap, every 300s cycle would
+# rewrite every oversized log in full forever (see commit 13dc655's bug).
+check "remote-log-cap caps a real log via cap_remote_control_logs, keeps head, same inode, idempotent" \
   docker exec "$NAME" bash -c '
     set -e
     source /usr/local/lib/remote-log-cap.sh
-    tmp="/tmp/fixture-remote.log"
+    export REMOTE_CONTROL_LOG_MAX_BYTES=$((1024*1024))
+    dir="/tmp/fixture-remote-dir"
+    rm -rf "$dir" && mkdir -p "$dir"
+    tmp="$dir/proj.log"
     { echo "HEAD-MARKER-LAUNCH-LINE"
       for i in $(seq 1 200000); do echo "repeated status banner line $i"; done
     } > "$tmp"
     before_inode=$(stat -c %i "$tmp")
     before_size=$(stat -c %s "$tmp")
-    cap_log_file "$tmp" $((1024*1024)) $((256*1024)) $((256*1024))
+    cap_remote_control_logs "$dir"
     after_inode=$(stat -c %i "$tmp")
     after_size=$(stat -c %s "$tmp")
-    [ "$before_size" -gt $((1024*1024)) ] &&
+    after_content=$(cat "$tmp")
+    cap_remote_control_logs "$dir"
+    after2_inode=$(stat -c %i "$tmp")
+    after2_size=$(stat -c %s "$tmp")
+    after2_content=$(cat "$tmp")
+    [ "$before_size" -gt "$REMOTE_CONTROL_LOG_MAX_BYTES" ] &&
     [ "$after_size" -lt "$before_size" ] &&
-    [ "$after_size" -le $((1024*1024)) ] &&
+    [ "$after_size" -lt "$REMOTE_CONTROL_LOG_MAX_BYTES" ] &&
     [ "$after_inode" -eq "$before_inode" ] &&
-    head -1 "$tmp" | grep -q "HEAD-MARKER-LAUNCH-LINE"
+    head -1 "$tmp" | grep -q "HEAD-MARKER-LAUNCH-LINE" &&
+    [ "$after2_size" -eq "$after_size" ] &&
+    [ "$after2_inode" -eq "$after_inode" ] &&
+    [ "$after2_content" = "$after_content" ]
   '
 
 # Chromium's OS-level shared libraries must be baked into the image so

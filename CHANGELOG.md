@@ -6,6 +6,36 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.20 (2026-09-03)
+
+- Fix `scripts/remote-log-cap.sh`'s cap never reaching a stable size (defect
+  in 0.19/13dc655, found by running the shipped script, not by reading it).
+  `cap_remote_control_logs` split the budget as `head=max/2, tail=max/2`, but
+  `cap_log_file` writes `head + marker + tail`, so the result was always
+  `max_bytes + len(marker)` — still over the cap on every single pass. At a
+  300s loop interval across 11 projects with a 20MB cap, that meant every
+  oversized log was rewritten in full roughly 288 times/day for no benefit
+  (~63GB/day of writes onto the appdata SSD).
+  - `cap_log_file` now clamps `head_bytes`/`tail_bytes` itself against the
+    marker's actual length so the written file is always strictly smaller
+    than `max_bytes` — a fixed point is reached after one pass, regardless
+    of what a caller asks for. Fixed in the shared function so no caller can
+    reintroduce the bug.
+  - `cap_remote_control_logs` now gives the head a small fixed budget
+    (256KB — ample for the launch/auth/connection lines and any startup
+    error) and lets the tail have the rest of the budget, since the tail is
+    what's actually useful when diagnosing a live problem, not 10MB of
+    repeated banner spam.
+  - `test/smoke.sh`: replaced the check that called `cap_log_file` directly
+    with hand-picked head=tail=max/4 (proportions the production code never
+    uses, which is why this shipped) with one that exercises
+    `cap_remote_control_logs` — the real entry point — against a fixture
+    directory honouring `REMOTE_CONTROL_LOG_MAX_BYTES`. It asserts the
+    post-cap size is strictly under the configured max (not just under the
+    original size), keeps the same-inode and head-preservation checks, and
+    adds an idempotence assertion: running the cap twice leaves size,
+    content and inode identical.
+
 ## 0.19 (2026-09-03)
 
 - (2026-09-03) Container hygiene, three fixes, live-verified against the
