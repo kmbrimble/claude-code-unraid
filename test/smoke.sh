@@ -49,6 +49,31 @@ check "npm install -g line sits after the Android cmdline-tools RUN block" bash 
   [ -n \"\$NPM_LINE\" ] && [ -n \"\$CMDLINE_LINE\" ] && [ \"\$NPM_LINE\" -gt \"\$CMDLINE_LINE\" ]
 "
 
+# PAL MCP server (code-review advisor via AWS Bedrock). `mcp>=1.0.0` is
+# unpinned upstream and resolves to `mcp==2.1.1`, which removes
+# `Server.list_tools` and crashes PAL at import — the single most important
+# thing not to lose, so it gets a dedicated static guard rather than relying
+# on the behavioural handshake check alone to catch a regression.
+LOCKFILE="$REPO_ROOT/pal-requirements.lock.txt"
+check "pal-requirements.lock.txt pins mcp==1.29.1" bash -c "grep -qx 'mcp==1.29.1' '$LOCKFILE'"
+
+# The PAL clone must be pinned to an exact commit SHA, not a tag or branch —
+# a tag can be force-moved upstream and a branch drifts by definition, either
+# of which would silently swap in unreviewed code.
+PAL_SHA="fa78edca0b6bc04ab00ddf5694d855f1b946b87d"
+check "PAL clone is pinned to the exact commit SHA" bash -c \
+  "grep -q '$PAL_SHA' '$REPO_ROOT/Dockerfile' && ! grep -qE 'git clone.*(--branch|-b )|checkout (v9\.8\.2|main|master)\b' '$REPO_ROOT/Dockerfile'"
+
+# The PyPI project `pal-mcp-server` is unrelated/name-squatted (10.5.0, no
+# author, no continuity with GitHub's 9.x line) — it must never be the
+# install source. Bare `pip install pal-mcp-server` (no path, no git+) would
+# hit PyPI; installing from the local SHA-pinned clone or `--no-deps` off the
+# committed lock file does not.
+check "nothing installs pal-mcp-server from PyPI" bash -c "
+  BARE_PYPI_HITS=\$(grep -E 'pip install[^|&]*\bpal-mcp-server\b' '$REPO_ROOT/Dockerfile' | grep -vE 'git\+|/opt/pal-mcp' | wc -l)
+  ! grep -qE '^pal-mcp-server==' '$LOCKFILE' && [ \"\$BARE_PYPI_HITS\" -eq 0 ]
+"
+
 echo "Building image $TAG from $REPO_ROOT..."
 if ! docker build -t "$TAG" "$REPO_ROOT"; then
   echo "FAIL"
@@ -393,6 +418,44 @@ check "connector does not listen when CONNECTOR_TOKEN is unset" docker exec "$NO
   '! curl -sf http://127.0.0.1:8765/healthz >/dev/null'
 docker rm -f "$NOTOKEN_NAME" >/dev/null 2>&1
 rm -rf "$NOTOKEN_HOME"
+
+# PAL MCP server (code-review advisor via AWS Bedrock, wired as an
+# OpenAI-compatible custom provider). Baked at /opt so it survives an empty
+# persisted home mount, same reasoning as the Android cmdline-tools.
+check "pal-mcp-server binary exists and is executable" docker exec "$NAME" \
+  test -x /opt/pal-mcp/venv/bin/pal-mcp-server
+
+# PAL must import and answer a real MCP handshake with NO API key set (the
+# smoke container never sets CUSTOM_API_KEY — it's supplied only via the CA
+# template at runtime), and DISABLED_TOOLS must have taken effect. This is
+# what actually catches the mcp==2.1.1 Server.list_tools crash-at-import trap
+# the lock-file pin guards statically above.
+docker cp "$REPO_ROOT/test/pal_mcp_handshake.py" "$NAME:/tmp/pal_mcp_handshake.py" >/dev/null 2>&1
+check "PAL answers MCP initialize + tools/list with the expected tool set" \
+  docker exec "$NAME" python3 /tmp/pal_mcp_handshake.py
+
+# No secret material may be baked into the image: CUSTOM_API_KEY is supplied
+# only via the CA template at runtime, and Bedrock API keys observed in this
+# project are prefixed "ABSK". Scope the filesystem grep to where PAL/the
+# entrypoint actually live rather than the whole image, which would be slow
+# and would false-positive on unrelated binary blobs.
+check "CUSTOM_API_KEY is unset in the built image" docker exec "$NAME" bash -c \
+  '! env | grep -q "^CUSTOM_API_KEY="'
+check "no ABSK-prefixed secret baked into PAL's install or the entrypoint" docker exec "$NAME" bash -c \
+  '! grep -rq "ABSK" /opt/pal-mcp /usr/local/bin/entrypoint.sh 2>/dev/null'
+
+# custom_models.json seed-if-absent: on an empty persisted-home mount
+# (exactly this test's bind mount) it must be created from the image-baked
+# default on first start, and a pre-existing file with different content
+# must survive a second start untouched — Kieren edits this file directly on
+# the persisted mount and a rebuild/restart must never clobber it.
+check "custom_models.json seeded on first start" docker exec "$NAME" \
+  test -f /root/.claude/pal/custom_models.json
+docker exec "$NAME" bash -c 'echo "{\"models\": [{\"sentinel\": true}]}" > /root/.claude/pal/custom_models.json'
+docker restart "$NAME" >/dev/null 2>&1
+sleep 3
+check "pre-existing custom_models.json is not overwritten on a second start" docker exec "$NAME" bash -c \
+  'grep -q sentinel /root/.claude/pal/custom_models.json'
 
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)

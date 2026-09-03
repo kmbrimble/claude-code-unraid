@@ -6,6 +6,22 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Plan:** bake the PAL MCP server (`BeehiveInnovations/pal-mcp-server`, SHA-pinned to
+  `fa78edca0b6bc04ab00ddf5694d855f1b946b87d` / tag `v9.8.2`) into the image at `/opt/pal-mcp`,
+  wired to AWS Bedrock ap-southeast-2 as an OpenAI-compatible custom provider, so code review
+  gets a non-Claude second opinion (`consensus`, `codereview`, `precommit`, `challenge`, plus the
+  hardcoded-essential `listmodels`/`version`) that survives container rebuilds. Git clone only
+  (never PyPI — the `pal-mcp-server` PyPI project is unrelated/name-squatted), `mcp` explicitly
+  pinned to `1.29.1` via a committed `pal-requirements.lock.txt` (unpinned `mcp>=1.0.0` resolves
+  to `2.1.1`, which drops `Server.list_tools` and crashes PAL at import). `custom_models.json`
+  lives on the persisted home mount (`/root/.claude/pal/`), seeded from an image-baked default
+  only if absent and never overwritten. `CUSTOM_API_KEY` is supplied only via the CA template
+  (`templates/claude-code.xml`) as `!secret claude-code/bedrock-api-key`, masked, never baked into
+  the image/entrypoint/logs. `entrypoint.sh` idempotently self-registers PAL as a user-scope
+  stdio MCP server. Files: `Dockerfile`, `entrypoint.sh`, `test/smoke.sh`,
+  `templates/claude-code.xml`, `pal-requirements.lock.txt` (new), `pal/custom_models.default.json`
+  (new). Container is not restarted as part of this change — pure source + CI.
+
 ## 0.22 (2026-09-03)
 
 - Add `REMOTE_CONTROL_PROJECTS` env var to select which `/projects` subdirectories auto-launch

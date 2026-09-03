@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "model_name": "zai.glm-5",
+      "aliases": ["glm", "glm-advisor"],
+      "context_window": 200000,
+      "max_output_tokens": 128000,
+      "supports_extended_thinking": false,
+      "supports_json_mode": false,
+      "supports_function_calling": false,
+      "supports_images": false,
+      "max_image_size_mb": 0.0,
+      "description": "GLM 5 via Bedrock (ap-southeast-2), on-demand",
+      "intelligence_score": 14
+    },
+    {
+      "model_name": "deepseek.v3.2",
+      "aliases": ["deepseek", "deepseek-advisor"],
+      "context_window": 128000,
+      "max_output_tokens": 8192,
+      "supports_extended_thinking": false,
+      "supports_json_mode": false,
+      "supports_function_calling": false,
+      "supports_images": false,
+      "max_image_size_mb": 0.0,
+      "description": "DeepSeek V3.2 via Bedrock (ap-southeast-2), on-demand. Context window unverified against a primary DeepSeek source (V3.2 docs superseded by v4); 128K is the most-cited published figure, conflicting secondary sources report 130K/163,840.",
+      "intelligence_score": 14
+    }
+  ]
+}
