@@ -6,6 +6,16 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Plan (2026-09-03): make Remote Control auto-launch selectable per project via a new
+  `REMOTE_CONTROL_PROJECTS` env var read by `launch_remote_control_sessions` in
+  `scripts/remote-control-launch.sh`. Unset/empty preserves current behaviour (launch every
+  `/projects/*/` with a `CLAUDE.md`); `none` launches nothing but still creates the log dir and
+  returns 0; a space-separated list launches only those basenames that exist and have a
+  `CLAUDE.md`, skipping the rest with a stdout message rather than failing. No signature change
+  needed — the function reads the env var directly, so `entrypoint.sh` needs no edit. Also:
+  `templates/claude-code.xml` (expose the var, default unset), `test/smoke.sh` (new checks for
+  each mode).
+
 ## 0.21 (2026-09-03)
 
 - Fix connector `POST/GET/DELETE /mcp` returning HTTP 400 for an unknown/expired

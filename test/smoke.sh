@@ -164,11 +164,35 @@ check "ps, free and top are present and runnable" docker exec "$NAME" bash -c \
 # opens a live connection, so this exercises the discovery/launch logic in
 # isolation (scripts/remote-control-launch.sh) against a stub `claude` on
 # $PATH, rather than a real session.
-check "remote-control auto-launch targets only CLAUDE.md dirs" \
+check "remote-control auto-launch targets only CLAUDE.md dirs, unset var preserves this" \
   docker exec "$NAME" bash -c '
     set -e
     tmp=$(mktemp -d)
-    mkdir -p "$tmp/projects/withmd" "$tmp/projects/withoutmd" "$tmp/stubbin" "$tmp/logs"
+    mkdir -p "$tmp/projects/withmd" "$tmp/projects/othermd" "$tmp/projects/withoutmd" "$tmp/stubbin" "$tmp/logs"
+    echo "# test project" > "$tmp/projects/withmd/CLAUDE.md"
+    echo "# other project" > "$tmp/projects/othermd/CLAUDE.md"
+    cat > "$tmp/stubbin/claude" <<STUB
+#!/bin/sh
+echo "\$PWD \$*" >> "$tmp/stub-calls.log"
+STUB
+    chmod +x "$tmp/stubbin/claude"
+    export PATH="$tmp/stubbin:$PATH"
+    unset REMOTE_CONTROL_PROJECTS
+    source /usr/local/lib/remote-control-launch.sh
+    launch_remote_control_sessions "$tmp/projects" "$tmp/logs"
+    sleep 1
+    grep -q "withmd remote-control" "$tmp/stub-calls.log" &&
+    grep -q "othermd remote-control" "$tmp/stub-calls.log" &&
+    ! grep -q "withoutmd" "$tmp/stub-calls.log" 2>/dev/null
+  '
+
+# REMOTE_CONTROL_PROJECTS=none must launch nothing, still return success, and
+# still create the log directory (the log-cap loop depends on it existing).
+check "REMOTE_CONTROL_PROJECTS=none launches nothing but still creates the log dir" \
+  docker exec "$NAME" bash -c '
+    set -e
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/projects/withmd" "$tmp/stubbin"
     echo "# test project" > "$tmp/projects/withmd/CLAUDE.md"
     cat > "$tmp/stubbin/claude" <<STUB
 #!/bin/sh
@@ -176,11 +200,61 @@ echo "\$PWD \$*" >> "$tmp/stub-calls.log"
 STUB
     chmod +x "$tmp/stubbin/claude"
     export PATH="$tmp/stubbin:$PATH"
+    export REMOTE_CONTROL_PROJECTS=none
+    source /usr/local/lib/remote-control-launch.sh
+    launch_remote_control_sessions "$tmp/projects" "$tmp/logs"
+    sleep 1
+    [ -d "$tmp/logs" ] &&
+    [ ! -f "$tmp/stub-calls.log" ]
+  '
+
+# REMOTE_CONTROL_PROJECTS="withmd" with two eligible fixtures (withmd,
+# othermd) must launch only the named one.
+check "REMOTE_CONTROL_PROJECTS names a subset, launches only that project" \
+  docker exec "$NAME" bash -c '
+    set -e
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/projects/withmd" "$tmp/projects/othermd" "$tmp/stubbin" "$tmp/logs"
+    echo "# test project" > "$tmp/projects/withmd/CLAUDE.md"
+    echo "# other project" > "$tmp/projects/othermd/CLAUDE.md"
+    cat > "$tmp/stubbin/claude" <<STUB
+#!/bin/sh
+echo "\$PWD \$*" >> "$tmp/stub-calls.log"
+STUB
+    chmod +x "$tmp/stubbin/claude"
+    export PATH="$tmp/stubbin:$PATH"
+    export REMOTE_CONTROL_PROJECTS="withmd"
     source /usr/local/lib/remote-control-launch.sh
     launch_remote_control_sessions "$tmp/projects" "$tmp/logs"
     sleep 1
     grep -q "withmd remote-control" "$tmp/stub-calls.log" &&
-    ! grep -q "withoutmd" "$tmp/stub-calls.log" 2>/dev/null
+    ! grep -q "othermd" "$tmp/stub-calls.log" 2>/dev/null
+  '
+
+# A named project that does not exist, and one that exists but has no
+# CLAUDE.md, must both be skipped (not fail the function) while a real,
+# eligible named project alongside them still launches.
+check "REMOTE_CONTROL_PROJECTS skips missing/CLAUDE.md-less names without failing" \
+  docker exec "$NAME" bash -c '
+    set -e
+    tmp=$(mktemp -d)
+    mkdir -p "$tmp/projects/withmd" "$tmp/projects/nomd" "$tmp/stubbin" "$tmp/logs"
+    echo "# test project" > "$tmp/projects/withmd/CLAUDE.md"
+    cat > "$tmp/stubbin/claude" <<STUB
+#!/bin/sh
+echo "\$PWD \$*" >> "$tmp/stub-calls.log"
+STUB
+    chmod +x "$tmp/stubbin/claude"
+    export PATH="$tmp/stubbin:$PATH"
+    export REMOTE_CONTROL_PROJECTS="withmd nomd ghost"
+    source /usr/local/lib/remote-control-launch.sh
+    launch_remote_control_sessions "$tmp/projects" "$tmp/logs"
+    rc=$?
+    sleep 1
+    [ "$rc" -eq 0 ] &&
+    grep -q "withmd remote-control" "$tmp/stub-calls.log" &&
+    ! grep -q "nomd" "$tmp/stub-calls.log" 2>/dev/null &&
+    ! grep -q "ghost" "$tmp/stub-calls.log" 2>/dev/null
   '
 
 # Remote Control repaints its status banner to stdout roughly once a second
