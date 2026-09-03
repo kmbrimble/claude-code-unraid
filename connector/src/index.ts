@@ -441,7 +441,14 @@ app.post("/mcp", async (req, res) => {
   let transport = sid ? transports.get(sid) : undefined;
 
   if (!transport) {
-    if (sid || !isInitializeRequest(req.body)) {
+    if (sid) {
+      // Session id was supplied but isn't known (e.g. the connector restarted
+      // and its in-memory session map was wiped). Per the MCP Streamable HTTP
+      // spec, 404 tells a compliant client to re-initialise automatically.
+      res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
+      return;
+    }
+    if (!isInitializeRequest(req.body)) {
       res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad request: no valid session" }, id: null });
       return;
     }
@@ -457,8 +464,9 @@ app.post("/mcp", async (req, res) => {
 
 const handleSessionReq = async (req: express.Request, res: express.Response) => {
   const sid = req.header("mcp-session-id");
-  const t = sid ? transports.get(sid) : undefined;
-  if (!t) { res.status(400).send("Invalid or missing session ID"); return; }
+  if (!sid) { res.status(400).send("Invalid or missing session ID"); return; }
+  const t = transports.get(sid);
+  if (!t) { res.status(404).send("Session not found"); return; }
   await t.handleRequest(req, res);
 };
 app.get("/mcp", handleSessionReq);

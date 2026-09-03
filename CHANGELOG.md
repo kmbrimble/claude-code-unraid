@@ -6,6 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.21 (2026-09-03)
+
 - Fix connector `POST/GET/DELETE /mcp` returning HTTP 400 for an unknown/expired
   `Mcp-Session-Id` (e.g. after the connector restarts and its in-memory session
   map is wiped). Per the MCP Streamable HTTP spec, an unrecognised session id
