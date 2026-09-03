@@ -12,6 +12,26 @@ _claude_auto_retry() {
     command claude "$@"
     return $?
   fi
+  # launcher.js's non-print modes always spawn a *new* nested tmux session and
+  # attach to it (chooseLaunchMode/createTmuxSession) — that attach needs a real
+  # terminal and fails outright without one ("open terminal failed: not a
+  # terminal"), regardless of this wrapper. Its print mode (-p/--print) has no
+  # such requirement (it buffers stdin and spawns claude directly), so only
+  # degrade to plain claude for the non-print, no-TTY case — headless `claude -p`
+  # calls keep the retry benefit, and interactive/tmux usage is untouched.
+  if [ ! -t 0 ]; then
+    local _car_print=0 _car_arg
+    for _car_arg in "$@"; do
+      if [ "$_car_arg" = "-p" ] || [ "$_car_arg" = "--print" ]; then
+        _car_print=1
+        break
+      fi
+    done
+    if [ "$_car_print" -eq 0 ]; then
+      command claude "$@"
+      return $?
+    fi
+  fi
   export CLAUDE_AUTO_RETRY_ACTIVE=1
   local _car_exit
   if [ -n "${ZSH_VERSION:-}" ]; then
@@ -44,12 +64,32 @@ export -f _claude_auto_retry
 
 # Auto-log every claude session (wraps the auto-retry function above, so both apply)
 claude() {
+    # `script -c` runs its command via $SHELL, falling back to /bin/sh (dash
+    # in this image) when unset — and dash can't see the exported bash
+    # function _claude_auto_retry, so it failed silently with exit 0 and no
+    # output. That only worked in a tmux pane because tmux sets SHELL=bash.
+    # A typescript of a non-interactive run has no value anyway, so skip the
+    # script(1) wrapper entirely when stdin isn't a TTY and call the retry
+    # function directly, letting its real exit status propagate untouched.
+    if [ ! -t 0 ]; then
+        _claude_auto_retry "$@"
+        return $?
+    fi
     local logdir="$HOME/claude-logs"
     mkdir -p "$logdir"
     local ts=$(date +%Y%m%d-%H%M%S)
     local rawlog="$logdir/session-$ts.raw.log"
     local cleanlog="$logdir/session-$ts.log"
-    script -f -q -c "_claude_auto_retry $*" "$rawlog"
+    # printf %q quotes each argument for safe reinsertion into the -c string,
+    # so arguments containing spaces survive; -e makes script return the
+    # wrapped command's exit status instead of its own; SHELL=/bin/bash is
+    # forced so this still works if ever invoked from a non-tmux TTY.
+    local cmd
+    cmd=$(printf '%q ' _claude_auto_retry "$@")
+    local exit_code
+    SHELL=/bin/bash script -e -f -q -c "$cmd" "$rawlog"
+    exit_code=$?
     # Strip ANSI escape codes and carriage-return redraw noise for a readable copy
     sed -E 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g; s/\r//g' "$rawlog" > "$cleanlog"
+    return $exit_code
 }

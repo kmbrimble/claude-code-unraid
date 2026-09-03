@@ -53,6 +53,15 @@ fi
 source /usr/local/lib/remote-control-launch.sh
 launch_remote_control_sessions /projects "${HOME}/claude-remote-logs"
 
+# Remote Control's status-banner repaints only overwrite in a real TTY, so
+# against these redirected log files they just append forever (see
+# scripts/remote-log-cap.sh). Cap them in a backgrounded loop rather than
+# on-demand, so it never delays "Container ready" and, being a plain
+# background job, is torn down with the rest of the container on SIGTERM
+# without interfering with the trap above.
+source /usr/local/lib/remote-log-cap.sh
+cap_remote_control_logs_loop "${HOME}/claude-remote-logs" &
+
 # Create ANDROID_SDK_ROOT/GRADLE_USER_HOME on the persisted home mount up
 # front (fast, synchronous) so they exist and are writable immediately, even
 # before the SDK download below finishes. Self-heals an empty/fresh mount.

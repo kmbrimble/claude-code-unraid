@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # deliberately NOT `docker-ce`/`containerd.io`/`docker-ce-rootless-extras`,
 # which are the daemon.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tmux git curl ca-certificates python3 openssh-client jq \
+      tmux git curl ca-certificates python3 openssh-client jq procps \
       openjdk-17-jdk-headless adb fastboot unzip \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
@@ -90,6 +90,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 COPY scripts/claude-wrapper.sh /usr/local/lib/claude-wrapper.sh
 COPY scripts/remote-control-launch.sh /usr/local/lib/remote-control-launch.sh
+COPY scripts/remote-log-cap.sh /usr/local/lib/remote-log-cap.sh
 COPY scripts/android-sdk-bootstrap.sh /usr/local/lib/android-sdk-bootstrap.sh
 RUN chmod +x /usr/local/lib/android-sdk-bootstrap.sh
 
