@@ -24,6 +24,10 @@ agent session runs inside when working via the Claude Code CLI MCP connector.
 - `/mnt/user/appdata/claude-code/config` → `/config`
 - `/var/run/docker.sock` → `/var/run/docker.sock` (see §4 — this is effectively host root)
 
+No new top-level mount for PAL: `/root/.claude/pal/custom_models.json` lives inside the
+existing home mount above, seeded by `entrypoint.sh` from an image-baked default only if
+absent — edit it directly on the host and it survives a rebuild (see §4a).
+
 Do not change any destination path without updating the unRAID CA template in step — changing
 a mapping orphans existing state.
 
@@ -41,6 +45,10 @@ see §6 on why versions drift silently on force-update):
 | Docker CLI | `29.7.2`, build `a7dcaa6` (Docker CE, not `docker.io`) | `docker --version` |
 | `ps`, `free`, `top` | present at `/usr/bin/{ps,free,top}` (procps) | `which ps free top` |
 | Claude Code CLI | `2.1.259` | `claude --version` inside a login shell |
+| PAL MCP server | `9.8.2` (SHA `fa78edca0b6bc04ab00ddf5694d855f1b946b87d`), 6 live tools
+  (`consensus`, `codereview`, `precommit`, `challenge`, plus hardcoded-essential
+  `listmodels`/`version`) | `/opt/pal-mcp/venv/bin/pal-mcp-server` MCP `initialize` +
+  `tools/list` handshake, see `test/pal_mcp_handshake.py` |
 | `claude-wrapper.sh` / `_claude_auto_retry` | sourced correctly; a non-zero exit from the
   wrapper's retry function propagates to the caller's `$?` | forced a `return 7` and confirmed
   `claude foo; echo $?` printed `7` |
@@ -82,6 +90,34 @@ can silently change installed tool versions if the image changed.
   passed. A timeout does **not** mean the underlying job failed or wasn't started — call
   `list_jobs` to find the job that's actually running (it will show as `status: running`) and
   poll `get_job` on that job id instead of re-issuing the original command.
+
+## 4a. PAL MCP server (code-review advisor)
+
+- Baked at `/opt/pal-mcp` (not `/root` — shadowed by the persisted home mount, same reasoning
+  as `/opt/android-cmdline-tools`). Upstream is `BeehiveInnovations/pal-mcp-server`, cloned
+  Git-only and SHA-pinned (never PyPI — the `pal-mcp-server` PyPI project is a separate,
+  apparently name-squatted release line unrelated to GitHub's 9.x). Deps are installed
+  `--no-deps` from the committed `pal-requirements.lock.txt`.
+- **Trap:** upstream's `mcp>=1.0.0` is unpinned and resolves to `mcp==2.1.1`, which removes
+  `Server.list_tools` and crashes PAL at import. The lock file pins `mcp==1.29.1` explicitly —
+  `test/smoke.sh` has a static check guarding this pin; do not let it drift.
+  `DISABLED_TOOLS` (Dockerfile `ENV`) trims the 18 upstream tools to 6 live ones —
+  `version`/`listmodels` are hardcoded `ESSENTIAL_TOOLS` in PAL's `server.py` and cannot be
+  disabled.
+- Wired to AWS Bedrock ap-southeast-2 as an OpenAI-compatible custom provider
+  (`CUSTOM_API_URL`). `CUSTOM_API_KEY` is supplied **only** via the CA template
+  (`templates/claude-code.xml`, `!secret claude-code/bedrock-api-key`, masked) — never baked
+  into the image, entrypoint, or any log line. PAL reads it straight from the process
+  environment; it's never written into `.claude.json`.
+- `entrypoint.sh` idempotently registers PAL as a user-scope stdio MCP server
+  (`claude mcp get pal || claude mcp add ...`), before anything else touches `.claude.json`
+  (avoids a write race with the Remote Control auto-launch further down).
+- **Trap:** the non-secret `-e` values (`CUSTOM_API_URL`, `DISABLED_TOOLS`, etc.) are frozen
+  into `.claude.json` at first registration. Because registration is idempotent, a later
+  Dockerfile `ENV` change to any of them is silently inert on an existing persisted home —
+  `claude mcp remove -s user pal` and let the next start re-register to pick up a change.
+- PAL is an advisor only — it has no repository write access, and nothing in this wiring grants
+  it one.
 
 ## 5. The `/feature` workflow
 

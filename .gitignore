@@ -1,2 +1,3 @@
 connector/node_modules/
 connector/dist/
+__pycache__/

@@ -6,21 +6,41 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- **Plan:** bake the PAL MCP server (`BeehiveInnovations/pal-mcp-server`, SHA-pinned to
+## 0.23 (2026-09-03)
+
+- Bake the PAL MCP server (`BeehiveInnovations/pal-mcp-server`, SHA-pinned to
   `fa78edca0b6bc04ab00ddf5694d855f1b946b87d` / tag `v9.8.2`) into the image at `/opt/pal-mcp`,
   wired to AWS Bedrock ap-southeast-2 as an OpenAI-compatible custom provider, so code review
   gets a non-Claude second opinion (`consensus`, `codereview`, `precommit`, `challenge`, plus the
-  hardcoded-essential `listmodels`/`version`) that survives container rebuilds. Git clone only
-  (never PyPI — the `pal-mcp-server` PyPI project is unrelated/name-squatted), `mcp` explicitly
-  pinned to `1.29.1` via a committed `pal-requirements.lock.txt` (unpinned `mcp>=1.0.0` resolves
-  to `2.1.1`, which drops `Server.list_tools` and crashes PAL at import). `custom_models.json`
-  lives on the persisted home mount (`/root/.claude/pal/`), seeded from an image-baked default
-  only if absent and never overwritten. `CUSTOM_API_KEY` is supplied only via the CA template
-  (`templates/claude-code.xml`) as `!secret claude-code/bedrock-api-key`, masked, never baked into
-  the image/entrypoint/logs. `entrypoint.sh` idempotently self-registers PAL as a user-scope
-  stdio MCP server. Files: `Dockerfile`, `entrypoint.sh`, `test/smoke.sh`,
-  `templates/claude-code.xml`, `pal-requirements.lock.txt` (new), `pal/custom_models.default.json`
-  (new). Container is not restarted as part of this change — pure source + CI.
+  hardcoded-essential `listmodels`/`version` — 6 live tools) that survives container rebuilds.
+  Before this change the container had no non-Claude review capability at all. Git clone only
+  (never PyPI — the `pal-mcp-server` PyPI project is a separate, apparently name-squatted
+  release line with no continuity with GitHub's 9.x line), `mcp` explicitly pinned to `1.29.1`
+  via a committed `pal-requirements.lock.txt` installed `--no-deps` (upstream's unpinned
+  `mcp>=1.0.0` resolves to `2.1.1`, which drops `Server.list_tools` and crashes PAL at import —
+  `test/smoke.sh` gained a static guard on this pin). `custom_models.json` lives on the
+  persisted home mount (`/root/.claude/pal/`), seeded by `entrypoint.sh` from an image-baked
+  default only if absent and never overwritten, with a non-blocking JSON-validity warning.
+  `CUSTOM_API_KEY` is supplied only via the CA template (`templates/claude-code.xml`) as
+  `!secret claude-code/bedrock-api-key`, masked — never baked into the image, entrypoint, or any
+  log line; PAL reads it straight from the process environment. `entrypoint.sh` idempotently
+  self-registers PAL as a user-scope stdio MCP server (`claude mcp get pal || claude mcp add
+  ...`), positioned before the Remote Control auto-launch to avoid a `.claude.json` write race
+  on a fresh home. The PAL install (apt `python3.11-venv`, git clone, venv, pip install) sits
+  above the unpinned `npm install -g` layer in the Dockerfile, matching that layer's own stated
+  ordering rationale (kept below the larger, stable baked layers). PAL has no repository write
+  access — advisor only. `test/smoke.sh` gained 8 new checks: the `mcp==1.29.1` pin, the SHA-pin
+  (not tag/branch), no-PyPI-install, the binary's presence, a real MCP `initialize`+`tools/list`
+  handshake against the built image with no API key set (via new `test/pal_mcp_handshake.py`)
+  asserting the exact tool set, the registration succeeding on a fresh home, no `ABSK`-prefixed
+  secret or set `CUSTOM_API_KEY` baked into the image, and the seed-if-absent/never-overwrite
+  behaviour of `custom_models.json`. Image size: `ghcr.io/kmbrimble/claude-code-unraid:latest`
+  (0.22, pulled) measured 1.74GB locally; the rebuilt image with this change measured 1.85GB,
+  ≈+110MB — consistent with the measured `/opt/pal-mcp` footprint of 120MB. Files:
+  `Dockerfile`, `entrypoint.sh`, `test/smoke.sh`, `templates/claude-code.xml`, `OPERATIONS.md`,
+  `pal-requirements.lock.txt` (new), `pal/custom_models.default.json` (new),
+  `test/pal_mcp_handshake.py` (new). Container is not restarted as part of this change — pure
+  source + CI; force-updating `claude-code` is Kieren's manual step once CI is green.
 
 ## 0.22 (2026-09-03)
 

@@ -425,6 +425,13 @@ rm -rf "$NOTOKEN_HOME"
 check "pal-mcp-server binary exists and is executable" docker exec "$NAME" \
   test -x /opt/pal-mcp/venv/bin/pal-mcp-server
 
+# Idempotent self-registration: on the empty /root bind mount there is no
+# pre-existing .claude.json, so this is the one code path where `claude mcp
+# add` actually executes at startup — assert it actually succeeded rather
+# than trusting the entrypoint's own best-effort echo.
+check "PAL registered as a user-scope MCP server on a fresh home" \
+  docker exec "$NAME" claude mcp get pal
+
 # PAL must import and answer a real MCP handshake with NO API key set (the
 # smoke container never sets CUSTOM_API_KEY — it's supplied only via the CA
 # template at runtime), and DISABLED_TOOLS must have taken effect. This is

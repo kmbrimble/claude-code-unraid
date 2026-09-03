@@ -56,10 +56,61 @@ RUN mkdir -p /opt/android-cmdline-tools \
     && mv /opt/android-cmdline-tools/cmdline-tools /opt/android-cmdline-tools/latest \
     && rm /tmp/cmdline-tools.zip
 
+# PAL MCP server: a non-Claude code-review advisor (consensus, codereview,
+# precommit, challenge) wired to AWS Bedrock ap-southeast-2 as an
+# OpenAI-compatible custom provider. Baked at /opt, NOT /root — same
+# reasoning as the Android cmdline-tools above: /root is bind-mounted from
+# the persisted appdata home at runtime and would shadow anything the image
+# wrote there. SHA-pinned clone (not a tag/branch — a tag can be force-moved
+# upstream and a branch drifts by definition) of the upstream
+# BeehiveInnovations/pal-mcp-server repo (renamed from zen-mcp-server; the
+# old URL redirects). Git only — NEVER PyPI: the `pal-mcp-server` PyPI
+# project is a separate, apparently name-squatted release line (10.5.0, no
+# author, no project_urls, no continuity with GitHub's 9.x line). Upstream's
+# `mcp>=1.0.0` is unpinned and resolves to `mcp==2.1.1`, which removes
+# `Server.list_tools` and crashes PAL at import, so deps are installed
+# --no-deps from the committed pal-requirements.lock.txt (which pins
+# mcp==1.29.1 explicitly) rather than resolved fresh, and the SHA-pinned
+# clone is installed separately, also --no-deps, since it's already exactly
+# what the lock file was generated against.
+RUN apt-get update && apt-get install -y --no-install-recommends python3.11-venv \
+    && rm -rf /var/lib/apt/lists/*
+COPY pal-requirements.lock.txt /opt/pal-mcp/pal-requirements.lock.txt
+RUN git clone https://github.com/BeehiveInnovations/pal-mcp-server.git /opt/pal-mcp/src \
+    && cd /opt/pal-mcp/src \
+    && git checkout fa78edca0b6bc04ab00ddf5694d855f1b946b87d \
+    && python3 -m venv /opt/pal-mcp/venv \
+    && /opt/pal-mcp/venv/bin/pip install --no-cache-dir --no-deps \
+         -r /opt/pal-mcp/pal-requirements.lock.txt \
+    && /opt/pal-mcp/venv/bin/pip install --no-cache-dir --no-deps /opt/pal-mcp/src
+
+# custom_models.default.json is the image-baked seed for the roster PAL
+# reads at /root/.claude/pal/custom_models.json on the persisted home mount
+# — entrypoint.sh copies it there only if that file is absent, so Kieren can
+# edit the roster without a rebuild and it survives one.
+COPY pal/custom_models.default.json /opt/pal-mcp/custom_models.default.json
+
+# Non-secret PAL config. CUSTOM_API_KEY is deliberately NOT set here — it
+# comes only from the CA template at runtime (templates/claude-code.xml) so
+# it is never baked into the image, and PAL reads it straight from the
+# process environment. CUSTOM_MODELS_CONFIG_PATH must be an absolute path: a
+# relative default would resolve against the stdio server's CWD, which is
+# not /opt/pal-mcp. DISABLED_TOOLS trims PAL's 18 tools down to the ones
+# worth exposing as a second opinion; `version`/`listmodels` are hardcoded
+# ESSENTIAL_TOOLS in PAL's server.py and cannot be disabled, so 6 tools stay
+# live regardless of this list.
+ENV CUSTOM_API_URL=https://bedrock-runtime.ap-southeast-2.amazonaws.com/openai/v1
+ENV CUSTOM_MODEL_NAME=zai.glm-5
+ENV CUSTOM_MODELS_CONFIG_PATH=/root/.claude/pal/custom_models.json
+ENV DEFAULT_MODEL=auto
+ENV DISABLED_TOOLS=chat,clink,thinkdeep,planner,debug,secaudit,docgen,analyze,refactor,tracer,testgen,apilookup
+ENV LOG_LEVEL=INFO
+
 # Unpinned, so it's the layer most likely to need deliberate invalidation
 # when a new Claude Code release should be picked up. Kept below the larger
-# baked layers (apt, ttyd, Playwright deps, cmdline-tools) so busting it only
-# costs re-running this one small layer, not dragging any of those down too.
+# baked layers (apt, ttyd, Playwright deps, cmdline-tools, PAL) so busting it
+# only costs re-running this one small layer, not dragging any of those down
+# too.
 RUN npm install -g @anthropic-ai/claude-code claude-auto-retry
 
 # claude-code-connector: MCP server (Streamable HTTP) that lets Claude Cowork

@@ -44,6 +44,44 @@ if ! grep -q '\.bashrc' "${HOME}/.bash_profile" 2>/dev/null; then
   echo '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"' >> "${HOME}/.bash_profile"
 fi
 
+# PAL MCP server: non-Claude code-review advisor wired to Bedrock. Seed
+# custom_models.json onto the persisted home mount from the image-baked
+# default ONLY if absent, so Kieren can edit the roster without a rebuild and
+# it survives one — never overwrite an existing file here.
+mkdir -p "${HOME}/.claude/pal"
+if [ ! -f "${HOME}/.claude/pal/custom_models.json" ]; then
+  cp /opt/pal-mcp/custom_models.default.json "${HOME}/.claude/pal/custom_models.json"
+fi
+# Non-blocking: a malformed file otherwise gives PAL an empty model roster
+# and every call fails with an unhelpful "unknown model", so warn loudly
+# rather than leaving that to be rediscovered mid-review. Must not block
+# startup — python3 is already present in the image for other checks.
+if ! python3 -c "import json; json.load(open('${HOME}/.claude/pal/custom_models.json'))" 2>/dev/null; then
+  echo "WARN: ${HOME}/.claude/pal/custom_models.json is not valid JSON; PAL will see an empty model roster until this is fixed."
+fi
+
+# Idempotent self-registration as a user-scope stdio MCP server, so a
+# fresh/empty appdata home registers PAL automatically. Runs before anything
+# else that touches ~/.claude.json (remote-control auto-launch, below) to
+# avoid a write race on a fresh home. Never pass CUSTOM_API_KEY via `-e`
+# here — that would persist it in plaintext in .claude.json. PAL reads it
+# straight from this process's environment instead (supplied only via the CA
+# template at runtime). Note: the other `-e` values below are frozen into
+# .claude.json at first registration — because registration is idempotent, a
+# later Dockerfile ENV change to any of them is silently inert on an
+# existing persisted home until `claude mcp remove -s user pal` is run.
+if ! claude mcp get pal >/dev/null 2>&1; then
+  claude mcp add --scope user pal \
+    -e CUSTOM_API_URL="${CUSTOM_API_URL}" \
+    -e CUSTOM_MODEL_NAME="${CUSTOM_MODEL_NAME}" \
+    -e CUSTOM_MODELS_CONFIG_PATH="${CUSTOM_MODELS_CONFIG_PATH}" \
+    -e DEFAULT_MODEL="${DEFAULT_MODEL}" \
+    -e DISABLED_TOOLS="${DISABLED_TOOLS}" \
+    -e LOG_LEVEL="${LOG_LEVEL}" \
+    -- /opt/pal-mcp/venv/bin/pal-mcp-server >/dev/null 2>&1 \
+    && echo "PAL MCP server registered." || echo "WARN: failed to register PAL MCP server."
+fi
+
 # Auto-launch a detached `claude remote-control` (no tmux) for every project
 # directory that has been onboarded (signalled by a CLAUDE.md at its root) —
 # the deliberate signal that a project is ready to be worked on autonomously.
