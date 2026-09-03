@@ -33,5 +33,6 @@
   <Config Name="TTYD Credential" Target="TTYD_CREDENTIAL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="Connector (MCP)" Target="8765" Default="8765" Mode="tcp" Description="claude-code-connector MCP endpoint at http://[IP]:8765/mcp" Type="Port" Display="always" Required="false" Mask="false">8765</Config>
   <Config Name="CONNECTOR_TOKEN" Target="CONNECTOR_TOKEN" Default="" Mode="" Description="Bearer token for the MCP connector. Leave empty to disable it." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="REMOTE_CONTROL_PROJECTS" Target="REMOTE_CONTROL_PROJECTS" Default="" Mode="" Description="Which /projects subdirectories auto-launch Remote Control at startup. Leave empty for all CLAUDE.md projects (default), 'none' for none, or a space-separated list of project names." Type="Variable" Display="always" Required="false" Mask="false"></Config>
   <TailscaleStateDir/>
 </Container>

@@ -6,15 +6,22 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- Plan (2026-09-03): make Remote Control auto-launch selectable per project via a new
-  `REMOTE_CONTROL_PROJECTS` env var read by `launch_remote_control_sessions` in
-  `scripts/remote-control-launch.sh`. Unset/empty preserves current behaviour (launch every
-  `/projects/*/` with a `CLAUDE.md`); `none` launches nothing but still creates the log dir and
-  returns 0; a space-separated list launches only those basenames that exist and have a
-  `CLAUDE.md`, skipping the rest with a stdout message rather than failing. No signature change
-  needed — the function reads the env var directly, so `entrypoint.sh` needs no edit. Also:
-  `templates/claude-code.xml` (expose the var, default unset), `test/smoke.sh` (new checks for
-  each mode).
+## 0.22 (2026-09-03)
+
+- Add `REMOTE_CONTROL_PROJECTS` env var to select which `/projects` subdirectories auto-launch
+  Remote Control at container start, so the owner can turn off the always-on
+  `claude remote-control` sessions (measured ~4.8GB RSS across 11 projects) now that Cowork
+  reaches the container through `claude-code-connector`, which creates sessions on demand and
+  doesn't depend on Remote Control at all. `launch_remote_control_sessions` in
+  `scripts/remote-control-launch.sh` reads the var directly from the environment (no signature
+  change, so `entrypoint.sh` is untouched): unset/empty preserves the existing behaviour exactly
+  (launch for every `/projects/*/` with a `CLAUDE.md`) so existing Community Applications
+  installs don't silently lose Remote Control on update; `none` launches nothing but still
+  creates the log directory and returns 0; a space-separated list of project basenames launches
+  only those, skipping (with a stdout message, not a failure) any name that doesn't exist or has
+  no `CLAUDE.md` — a typo in the template variable must never stop the container coming up.
+  `templates/claude-code.xml` exposes the new variable, defaulting to unset. `test/smoke.sh`
+  gained four checks covering the unset, `none`, subset, and skip-invalid-names cases.
 
 ## 0.21 (2026-09-03)
 
