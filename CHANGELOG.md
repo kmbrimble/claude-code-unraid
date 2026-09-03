@@ -6,6 +6,33 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- (2026-09-03) Plan: container hygiene, three fixes.
+  1. `scripts/claude-wrapper.sh`'s `claude()` silently no-ops under non-TTY
+     stdin (`script -c` runs its command via `$SHELL`, which falls back to
+     dash outside tmux, where the exported bash function isn't visible) —
+     skip the `script` typescript wrapper entirely when stdin isn't a TTY and
+     call `_claude_auto_retry "$@"` directly instead; for the interactive
+     path, force `SHELL=/bin/bash` and add `script -e` so the real exit
+     status propagates, and build the `-c` command string with `printf %q` so
+     arguments containing spaces survive.
+  2. `Dockerfile`: add `procps` to the first `apt-get install` block (`ps`,
+     `free`, `top`, `pgrep` are currently missing).
+  3. New `scripts/remote-log-cap.sh`, sourced and backgrounded from
+     `entrypoint.sh` in a sleep loop alongside the existing remote-control
+     launch: caps each `~/claude-remote-logs/*.log` at
+     `REMOTE_CONTROL_LOG_MAX_BYTES` (default 20MB) by writing a head+tail
+     excerpt back into the same file via `>` (truncates the existing inode in
+     place; never `mv`/`rm`, since the session process holds an open
+     `O_APPEND` fd). Per-file failures are swallowed so one bad log can't
+     abort the loop or the entrypoint.
+  - Tests: `test/smoke.sh` gets a real invocation check for the `claude`
+    wrapper (exit 0, version-shaped output, no `_claude_auto_retry: not
+    found`), a non-zero exit propagation check (override
+    `_claude_auto_retry` to `return 7` and assert it surfaces), a
+    `ps`/`free`/`top` presence check, and a direct test of
+    `cap_log_file` against an oversized fixture (size drops below cap, first
+    line preserved, inode unchanged).
+
 ## 0.18 (2026-09-02)
 
 - (2026-09-02) Replaced Debian bookworm's `docker.io` (ships Docker CLI

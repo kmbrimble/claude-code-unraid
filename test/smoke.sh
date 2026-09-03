@@ -124,6 +124,40 @@ check "~/.bashrc sources claude-wrapper.sh" docker exec "$NAME" grep -q "claude-
 check "claude wrapper function loads in a login shell" \
   docker exec "$NAME" bash -lc 'declare -f claude >/dev/null'
 
+# `declare -f` only proves the function is defined, not that it actually
+# runs. The real bug (issue: claude() silently no-ops under non-interactive
+# stdin) only shows up when it's invoked: `script -c` runs its command via
+# $SHELL, which falls back to dash outside a tmux pane, where the exported
+# bash function _claude_auto_retry isn't visible — so it failed with no
+# output and exit 0. `docker exec` without `-t` gives non-TTY stdin, matching
+# how this wrapper is actually driven non-interactively (headless jobs,
+# scripts). Assert real output, real success, and the absence of the dash
+# error string.
+check "claude wrapper: claude --version runs non-interactively and succeeds" \
+  docker exec "$NAME" bash -c '
+    out=$(bash -lc "claude --version" 2>&1)
+    code=$?
+    [ "$code" -eq 0 ] &&
+    echo "$out" | grep -qE "[0-9]+\.[0-9]+\.[0-9]+" &&
+    ! echo "$out" | grep -q "_claude_auto_retry: not found"
+  '
+
+# `script` without `-e` returns its own exit status, not the wrapped
+# command's, so failures were invisible to any caller. Override
+# _claude_auto_retry (the function claude() delegates to) to return a known
+# non-zero code and confirm it survives all the way back out through the
+# wrapper.
+check "claude wrapper: non-zero exit status propagates" \
+  docker exec "$NAME" bash -c '
+    bash -lc "_claude_auto_retry() { return 7; }; claude foo; exit \$?"
+    [ $? -eq 7 ]
+  '
+
+# procps (ps/free/top/pgrep) was missing from the image, forcing triage to
+# parse /proc by hand.
+check "ps, free and top are present and runnable" docker exec "$NAME" bash -c \
+  'ps --version >/dev/null && free -m >/dev/null && top -bn1 >/dev/null'
+
 # Remote Control auto-launch: entrypoint.sh scans /projects subdirectories
 # and starts a detached `claude remote-control` for each one containing a
 # CLAUDE.md, skipping the rest. A real `claude remote-control` needs auth and
@@ -147,6 +181,35 @@ STUB
     sleep 1
     grep -q "withmd remote-control" "$tmp/stub-calls.log" &&
     ! grep -q "withoutmd" "$tmp/stub-calls.log" 2>/dev/null
+  '
+
+# Remote Control repaints its status banner to stdout roughly once a second
+# via cursor-up escapes, which only overwrite in a real TTY — against a log
+# file every repaint just appends, so left alone these grow unbounded
+# (791MB/7 days observed live). scripts/remote-log-cap.sh's cap_log_file must
+# shrink an oversized log in place: this tests the function directly against
+# a fixture file (no real remote-control session needed), and asserts the
+# shrink happens on the SAME inode (`stat -c %i` unchanged) since the session
+# process holds an open O_APPEND fd on the log — an mv/rm-based approach
+# would leave it writing to a detached, now-invisible inode.
+check "remote-log-cap shrinks an oversized log in place, keeps head, same inode" \
+  docker exec "$NAME" bash -c '
+    set -e
+    source /usr/local/lib/remote-log-cap.sh
+    tmp="/tmp/fixture-remote.log"
+    { echo "HEAD-MARKER-LAUNCH-LINE"
+      for i in $(seq 1 200000); do echo "repeated status banner line $i"; done
+    } > "$tmp"
+    before_inode=$(stat -c %i "$tmp")
+    before_size=$(stat -c %s "$tmp")
+    cap_log_file "$tmp" $((1024*1024)) $((256*1024)) $((256*1024))
+    after_inode=$(stat -c %i "$tmp")
+    after_size=$(stat -c %s "$tmp")
+    [ "$before_size" -gt $((1024*1024)) ] &&
+    [ "$after_size" -lt "$before_size" ] &&
+    [ "$after_size" -le $((1024*1024)) ] &&
+    [ "$after_inode" -eq "$before_inode" ] &&
+    head -1 "$tmp" | grep -q "HEAD-MARKER-LAUNCH-LINE"
   '
 
 # Chromium's OS-level shared libraries must be baked into the image so
