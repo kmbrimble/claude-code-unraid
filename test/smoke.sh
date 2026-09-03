@@ -292,6 +292,25 @@ check "connector rejects wrong bearer token with 401" docker exec "$NAME" bash -
   "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/mcp \
      -H 'content-type: application/json' -H 'authorization: Bearer wrong' -d '$MCP_INIT')\" = 401 ]"
 
+# Spec compliance (MCP Streamable HTTP, session management): an unknown session
+# id (e.g. from before a connector restart wiped its in-memory session map)
+# must get 404, not 400, so a compliant client re-initialises automatically
+# instead of treating it as a fatal protocol error and getting stuck forever.
+BOGUS_SID="$(cat /proc/sys/kernel/random/uuid)"
+TOOLS_LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+check "connector POST /mcp with unknown session id returns 404" docker exec "$NAME" bash -c \
+  "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/mcp \
+     -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+     -H 'authorization: Bearer $CONNECTOR_TOKEN' -H 'mcp-session-id: $BOGUS_SID' -d '$TOOLS_LIST')\" = 404 ]"
+check "connector GET /mcp with unknown session id returns 404" docker exec "$NAME" bash -c \
+  "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/mcp \
+     -H 'accept: text/event-stream' \
+     -H 'authorization: Bearer $CONNECTOR_TOKEN' -H 'mcp-session-id: $BOGUS_SID')\" = 404 ]"
+check "connector POST /mcp with no session id on non-initialize request still returns 400" docker exec "$NAME" bash -c \
+  "[ \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/mcp \
+     -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+     -H 'authorization: Bearer $CONNECTOR_TOKEN' -d '$TOOLS_LIST')\" = 400 ]"
+
 NOTOKEN_NAME="${NAME}-notoken"
 NOTOKEN_HOME="$(mktemp -d)"
 docker run -d --name "$NOTOKEN_NAME" -v "$NOTOKEN_HOME:/root" "$TAG" >/dev/null 2>&1

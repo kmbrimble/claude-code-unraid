@@ -6,6 +6,13 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Fix connector `POST/GET/DELETE /mcp` returning HTTP 400 for an unknown/expired
+  `Mcp-Session-Id` (e.g. after the connector restarts and its in-memory session
+  map is wiped). Per the MCP Streamable HTTP spec, an unrecognised session id
+  must get 404 so compliant clients re-initialise automatically; a missing
+  session id header on a non-initialize request still gets 400 (unchanged).
+  Files: `connector/src/index.ts`, `test/smoke.sh`.
+
 ## 0.20 (2026-09-03)
 
 - Fix `scripts/remote-log-cap.sh`'s cap never reaching a stable size (defect
