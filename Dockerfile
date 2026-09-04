@@ -106,6 +106,63 @@ ENV DEFAULT_MODEL=auto
 ENV DISABLED_TOOLS=chat,clink,thinkdeep,planner,debug,secaudit,docgen,analyze,refactor,tracer,testgen,apilookup
 ENV LOG_LEVEL=INFO
 
+# Security scanners for the `code-security-audit` skill. GitHub's own scanning
+# only covers repos that build through Actions, and not all of these do, so the
+# scanners have to run locally in this container or those repos are silently
+# unscanned. All four are pinned; the three static binaries are SHA256-verified
+# on download, because an unverified curl-to-/usr/local/bin is exactly the
+# supply-chain shape this repo already got bitten by once (the name-squatted
+# `pal-mcp-server` PyPI project).
+#
+# Chosen 4 Sep 2026 after measuring the alternatives:
+#   * osv-scanner over trivy/grype — covers npm, PyPI, Maven/Gradle and Composer
+#     in one binary, and its offline DB is 212 MB against trivy's 1.28 GB and
+#     grype's 2.03 GB. That DB is NOT baked: it lives on the persisted home
+#     mount, because baking it guarantees it is stale the day after the build.
+#   * trufflehog over gitleaks — on a clean corpus gitleaks produced 6 findings
+#     and all 6 were false positives from its `generic-api-key` rule, every one
+#     a SECRET_KEY example in documentation; trufflehog returned 0 on the same
+#     bytes. Run it with `--no-verification` to keep it fully offline.
+#   * semgrep CE over opengrep — opengrep is 45 MB against semgrep's 348 MB, but
+#     opengrep's own rules repo was archived in Nov 2025 with no successor, so it
+#     ends up vendoring semgrep-rules and depending on the same licence anyway.
+#     NOTE: Semgrep's maintained rules left open source on 13 Dec 2024 (Semgrep
+#     Rules License v1.0). Internal scanning of our own repos is the explicitly
+#     permitted case; offering the rules as a service is not.
+#   * checkov deliberately NOT installed — 258 MB to run 47 Dockerfile checks,
+#     of which 2 fired on a realistic Dockerfile, and it missed a hardcoded
+#     `ENV API_KEY` that hadolint caught. Revisit if Terraform or K8s appears.
+#
+# Baked at /opt, never under /root — /root is bind-mounted from the persisted
+# appdata home at runtime and would shadow anything the image wrote there (same
+# reasoning as PAL and the Android cmdline-tools above).
+RUN set -eux; \
+    curl -fsSL -o /tmp/osv-scanner \
+      https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64; \
+    echo "f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be  /tmp/osv-scanner" | sha256sum -c -; \
+    install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner; \
+    curl -fsSL -o /tmp/trufflehog.tar.gz \
+      https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_amd64.tar.gz; \
+    echo "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b  /tmp/trufflehog.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/trufflehog.tar.gz -C /tmp trufflehog; \
+    install -m 0755 /tmp/trufflehog /usr/local/bin/trufflehog; \
+    curl -fsSL -o /tmp/hadolint \
+      https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-Linux-x86_64; \
+    echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /tmp/hadolint" | sha256sum -c -; \
+    install -m 0755 /tmp/hadolint /usr/local/bin/hadolint; \
+    rm -f /tmp/osv-scanner /tmp/trufflehog /tmp/trufflehog.tar.gz /tmp/hadolint
+
+# semgrep CE in its own venv at /opt, exposed via a symlink rather than by
+# putting the venv's bin on PATH (which would shadow python3/pip for every
+# session in this container).
+RUN python3 -m venv /opt/semgrep/venv \
+    && /opt/semgrep/venv/bin/pip install --no-cache-dir semgrep==1.176.0 \
+    && ln -s /opt/semgrep/venv/bin/semgrep /usr/local/bin/semgrep
+
+# semgrep phones home by default and this container should not. --metrics=off is
+# also passed explicitly by the skill; this is the belt to that braces.
+ENV SEMGREP_SEND_METRICS=off
+
 # Unpinned, so it's the layer most likely to need deliberate invalidation
 # when a new Claude Code release should be picked up. Kept below the larger
 # baked layers (apt, ttyd, Playwright deps, cmdline-tools, PAL) so busting it

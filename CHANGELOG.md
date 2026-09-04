@@ -6,6 +6,27 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.24 (2026-09-05)
+
+- Bake four security scanners into the image for the new `code-security-audit` skill:
+  `semgrep` 1.176.0 (SAST, in its own venv at `/opt/semgrep` with only a symlink on PATH so it
+  cannot shadow `python3`/`pip`), `osv-scanner` 2.5.1 (dependencies across npm, PyPI,
+  Maven/Gradle and Composer), `trufflehog` 3.97.4 (secrets) and `hadolint` 2.15.1
+  (Dockerfiles). The three static binaries are SHA256-verified on download. GitHub's own
+  scanning only covers repos that build through Actions and not all of these do, so without
+  local scanners those repos are silently unscanned. Chosen over the alternatives on measured
+  evidence: `osv-scanner` because its offline DB is 212 MB against trivy's 1.28 GB and grype's
+  2.03 GB; `trufflehog` because `gitleaks` produced 6 findings on a clean corpus and all 6 were
+  false positives from `generic-api-key`, while trufflehog returned 0 on the same bytes;
+  `semgrep` CE over `opengrep` because opengrep's rules repo was archived in Nov 2025 with no
+  successor, so it depends on the same Semgrep Rules License anyway. `checkov` deliberately
+  omitted — 258 MB for 47 Dockerfile checks, 2 of which fired, and it missed a hardcoded
+  `ENV API_KEY` that hadolint caught. `SEMGREP_SEND_METRICS=off` so the container does not phone
+  home. The osv-scanner offline database is NOT baked: it lives on the persisted home mount,
+  because baking it guarantees it is stale the day after the build. `test/smoke.sh` asserts each
+  scanner at its pinned version, and asserts the semgrep venv stays off `PATH`.
+  Adds roughly 490 MB to the image.
+
 ## 0.23 (2026-09-03)
 
 - Bake the PAL MCP server (`BeehiveInnovations/pal-mcp-server`, SHA-pinned to

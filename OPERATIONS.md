@@ -49,6 +49,12 @@ see §6 on why versions drift silently on force-update):
   (`consensus`, `codereview`, `precommit`, `challenge`, plus hardcoded-essential
   `listmodels`/`version`) | `/opt/pal-mcp/venv/bin/pal-mcp-server` MCP `initialize` +
   `tools/list` handshake, see `test/pal_mcp_handshake.py` |
+| Security scanners | `semgrep` 1.176.0, `osv-scanner` 2.5.1, `trufflehog` 3.97.4,
+  `hadolint` 2.15.1 — all pinned in the Dockerfile, the three binaries SHA256-verified on
+  download. `semgrep` lives in a venv at `/opt/semgrep` and is exposed only by a symlink, so the
+  venv never shadows `python3`/`pip`. The osv-scanner offline DB is on the persisted mount, not
+  in the image | `test/smoke.sh` asserts each pinned version, and asserts the venv stays off
+  `PATH` |
 | `claude-wrapper.sh` / `_claude_auto_retry` | sourced correctly; a non-zero exit from the
   wrapper's retry function propagates to the caller's `$?` | forced a `return 7` and confirmed
   `claude foo; echo $?` printed `7` |

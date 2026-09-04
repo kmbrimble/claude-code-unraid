@@ -464,6 +464,25 @@ sleep 3
 check "pre-existing custom_models.json is not overwritten on a second start" docker exec "$NAME" bash -c \
   'grep -q sentinel /root/.claude/pal/custom_models.json'
 
+# Security scanners for code-security-audit. Version-pinned in the Dockerfile,
+# so assert the pinned version specifically — a silently-drifted scanner is
+# worse than an absent one, because the report still claims coverage.
+check "semgrep present at pinned version" docker exec "$NAME" bash -lc \
+  'semgrep --version 2>/dev/null | grep -q "^1\.176\.0$"'
+check "osv-scanner present at pinned version" docker exec "$NAME" bash -lc \
+  'osv-scanner --version 2>&1 | grep -q "2\.5\.1"'
+check "trufflehog present at pinned version" docker exec "$NAME" bash -lc \
+  'trufflehog --version 2>&1 | grep -q "3\.97\.4"'
+check "hadolint present at pinned version" docker exec "$NAME" bash -lc \
+  'hadolint --version 2>&1 | grep -q "2\.15\.1"'
+
+# The semgrep venv must NOT be on PATH — only the symlink. Putting the venv's
+# bin on PATH would shadow python3/pip for every session in this container.
+check "semgrep venv bin is not on PATH" docker exec "$NAME" bash -lc \
+  '! (echo "$PATH" | grep -q "/opt/semgrep/venv/bin")'
+check "python3 is still the system python, not semgrep venv" docker exec "$NAME" bash -lc \
+  '[ "$(readlink -f "$(command -v python3)")" != "/opt/semgrep/venv/bin/python3" ]'
+
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
 if docker stop "$NAME" >/dev/null 2>&1; then
