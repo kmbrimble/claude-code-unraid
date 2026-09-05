@@ -410,6 +410,54 @@ check "connector POST /mcp with no session id on non-initialize request still re
      -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
      -H 'authorization: Bearer $CONNECTOR_TOKEN' -d '$TOOLS_LIST')\" = 400 ]"
 
+# claude-usage-collector: an OPTIONAL service for the macOS usage widget
+# (github.com/kmbrimble/claude-usage-widget). Its binary is deliberately not
+# baked into the image — it lives on the persisted home mount so that project
+# can ship versions without an image rebuild. Two properties must hold, and
+# only one of them is the happy path.
+#
+# First: absence must never break startup. That is the state this very
+# container is in on a fresh home mount, so assert the entrypoint said so
+# rather than merely not crashing — a silently skipped block and a correctly
+# skipped block look identical from the outside.
+check "entrypoint reports an absent collector binary instead of failing" bash -c \
+  "docker logs '$NAME' 2>&1 | grep -q 'No claude-usage-collector binary'"
+
+# Second: when the binary IS there, it must actually be launched, on the
+# address the entrypoint promises and with the token passed through. A stub
+# stands in for the real Go binary so this test stays independent of the widget
+# project's build.
+#
+# TRAP, learned the hard way: `-v` is resolved by the Docker DAEMON, which runs
+# on the unRAID host — a file written into $COLLECTOR_HOME from inside this
+# container never appears in the mount, and the daemon just creates an empty
+# host directory at that path. `docker cp` is client-side and does work (the
+# PAL handshake check above relies on the same thing). So: start the container,
+# copy the stub in, then restart so the entrypoint runs again with it present.
+COLLECTOR_NAME="${NAME}-collector"
+COLLECTOR_HOME="$(mktemp -d)"
+COLLECTOR_STUB="$(mktemp)"
+cat > "$COLLECTOR_STUB" <<'STUB'
+#!/bin/sh
+echo "LISTEN_ADDR=$LISTEN_ADDR TOKEN=${COLLECTOR_AUTH_TOKEN:-unset}" > /root/collector-stub-ran
+sleep 300
+STUB
+chmod +x "$COLLECTOR_STUB"
+docker run -d --name "$COLLECTOR_NAME" -v "$COLLECTOR_HOME:/root" \
+  -e USAGE_COLLECTOR_TOKEN=smoketest-usage-token "$TAG" >/dev/null 2>&1
+sleep 3
+docker exec "$COLLECTOR_NAME" mkdir -p /root/.local/bin >/dev/null 2>&1
+docker cp "$COLLECTOR_STUB" "$COLLECTOR_NAME:/root/.local/bin/claude-usage-collector" >/dev/null 2>&1
+docker exec "$COLLECTOR_NAME" chmod +x /root/.local/bin/claude-usage-collector >/dev/null 2>&1
+docker restart "$COLLECTOR_NAME" >/dev/null 2>&1
+sleep 3
+check "entrypoint launches a collector binary that is present, on 8766" \
+  docker exec "$COLLECTOR_NAME" grep -q "LISTEN_ADDR=0.0.0.0:8766" /root/collector-stub-ran
+check "entrypoint passes USAGE_COLLECTOR_TOKEN through to the collector" \
+  docker exec "$COLLECTOR_NAME" grep -q "TOKEN=smoketest-usage-token" /root/collector-stub-ran
+docker rm -f "$COLLECTOR_NAME" >/dev/null 2>&1
+rm -rf "$COLLECTOR_HOME" "$COLLECTOR_STUB"
+
 NOTOKEN_NAME="${NAME}-notoken"
 NOTOKEN_HOME="$(mktemp -d)"
 docker run -d --name "$NOTOKEN_NAME" -v "$NOTOKEN_HOME:/root" "$TAG" >/dev/null 2>&1

@@ -6,6 +6,32 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.25 (2026-09-05)
+
+- Optionally launch `claude-usage-collector` on port 8766 from `entrypoint.sh`, for the macOS
+  usage widget in `kmbrimble/claude-usage-widget`. The collector reads this container's own
+  Claude Code OAuth credentials and `OPENROUTER_API_KEY` and serves usage percentages and
+  spend figures as JSON. It lives here rather than in its own container specifically because
+  the credentials are already here: a separate container would have meant bind-mounting a
+  live credentials file into a second place, and this way there is one copy and one reader.
+  The collector never writes that file — doing so would fight Claude Code for it.
+  **The binary is deliberately not baked into the image.** It is launched from
+  `$HOME/.local/bin/claude-usage-collector` on the persisted home mount, so the widget project
+  ships new versions by dropping a file there — no image rebuild, no force-update, and no
+  further change to this repo. The block is generic on purpose: it launches whatever it finds
+  at that path, and its absence is the normal case rather than an error. `USAGE_COLLECTOR_ADDR`
+  overrides the bind address; `USAGE_COLLECTOR_TOKEN` gates `/usage` behind a bearer token when
+  set. Unlike the connector this exposes no shell and no credential, so it is not gated on a
+  token being present — but port 8766 is only reachable off-host if the CA template publishes
+  it. `test/smoke.sh` asserts both halves: that a missing binary is reported and startup
+  continues, and that a present one is launched on 8766 with the token passed through.
+- `templates/claude-code.xml`: publish port 8766 and add `USAGE_COLLECTOR_TOKEN`. Also commits
+  the three OpenRouter variables (`OPENROUTER_API_KEY`, `OPENROUTER_MODELS_CONFIG_PATH`,
+  `OPENROUTER_ALLOWED_MODELS`) that were added to the live template on 4 Sep and deliberately
+  left uncommitted to avoid triggering an image build for a template-only change. That reason
+  no longer applies — this release changes the image anyway — so the repo copy is brought back
+  in step rather than being left drifted.
+
 ## 0.24 (2026-09-05)
 
 - Bake four security scanners into the image for the new `code-security-audit` skill:

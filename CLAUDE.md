@@ -54,6 +54,12 @@ committing to a full smoke run.
 7. **The MCP connector (`connector/`, port 8765) must only start when `CONNECTOR_TOKEN` is
    set.** Its `run_command` tool is arbitrary shell in a container holding the Docker socket.
    The smoke test guards this; do not weaken it.
+8. **The `claude-usage-collector` block in `entrypoint.sh` must never make startup depend on
+   the collector.** The binary is not in this image — it is dropped onto the persisted home
+   mount by `kmbrimble/claude-usage-widget` — so absence is the normal case and must stay a
+   logged skip, not an error. The smoke test guards both the absent and present paths. Do not
+   bake the binary into the image: keeping it out is what lets that project ship without a
+   force-update here.
 
 ## Deploy and verify
 

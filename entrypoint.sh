@@ -144,6 +144,34 @@ else
   echo "No CONNECTOR_TOKEN set; claude-code-connector disabled."
 fi
 
+# Optionally start claude-usage-collector (HTTP on port 8766). It reads this
+# container's own Claude Code OAuth credentials plus OPENROUTER_API_KEY and
+# serves usage/spend figures to the macOS widget in
+# github.com/kmbrimble/claude-usage-widget.
+#
+# The binary is deliberately NOT baked into this image. It lives on the
+# persisted home mount, so the widget project ships new versions by dropping a
+# file there — no image rebuild, no force-update, no change to this repo. That
+# is the whole point of this block being generic: it launches what it finds.
+#
+# Its absence is the normal case and must never be an error. Startup continues
+# either way; test/smoke.sh guards both halves.
+#
+# SAFETY: unlike the connector this holds no shell and serves read-only
+# percentages and dollar figures — no credential ever reaches its output. It
+# is nevertheless gated by USAGE_COLLECTOR_TOKEN when one is set, and port
+# 8766 is only reachable off-host if the CA template publishes it.
+USAGE_COLLECTOR_BIN="${HOME}/.local/bin/claude-usage-collector"
+USAGE_COLLECTOR_ADDR="${USAGE_COLLECTOR_ADDR:-0.0.0.0:8766}"
+if [ -x "$USAGE_COLLECTOR_BIN" ]; then
+  LISTEN_ADDR="$USAGE_COLLECTOR_ADDR" \
+  COLLECTOR_AUTH_TOKEN="${USAGE_COLLECTOR_TOKEN:-}" \
+    "$USAGE_COLLECTOR_BIN" >"${HOME}/claude-usage-collector.log" 2>&1 &
+  echo "claude-usage-collector started on ${USAGE_COLLECTOR_ADDR}."
+else
+  echo "No claude-usage-collector binary at ${USAGE_COLLECTOR_BIN}; skipping."
+fi
+
 echo "Container ready. Attach with: docker exec -it claude-code tmux attach -t claude"
 
 # Block here to keep the container alive. Use a backgrounded sleep-loop with
