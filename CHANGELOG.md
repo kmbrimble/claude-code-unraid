@@ -6,6 +6,31 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.26 (2026-09-06)
+
+- Fix the connector silently SIGKILLing long-running `start_session`/`continue_session` jobs
+  after 5 minutes when `timeout_seconds` was omitted, and make the timeout self-announcing.
+  `connector/src/index.ts`: raised the built-in `DEFAULT_TIMEOUT_MS` fallback from `5 * 60_000`
+  to `30 * 60_000` (milliseconds — the env var of the same name, which the user is adding to
+  the live unRAID template by hand, takes the same units). The fallback stays env-driven only:
+  `start_session`/`continue_session` still leave `timeout_seconds` genuinely optional with no
+  hardcoded per-tool default, so `DEFAULT_TIMEOUT_MS` remains the one authoritative knob for the
+  omitted case rather than being silently shadowed. `summariseJob`'s result now carries an
+  explicit `timeout` field — seconds applied, `signal: "SIGKILL"`, and a message pointing at
+  `timeout_seconds` — whenever a job's status is `"timeout"`, so a caller never again has to
+  infer a kill from an absent `finished_at`. The `timeout_seconds` `.describe()` text on
+  `start_session`, `continue_session` and `run_command` now says what happens when it's omitted
+  and that exceeding it is a hard SIGKILL with no cleanup; `cancel_job`'s description now
+  contrasts its graceful SIGTERM with that.
+- `test/smoke.sh` and new `test/connector_timeout_check.py`: a behavioural test drives the real
+  MCP endpoint of a throwaway container started with a low `DEFAULT_TIMEOUT_MS` and `CLAUDE_BIN`
+  pointed at a fake, deliberately-slow `claude` stand-in (no real auth needed). It asserts a job
+  that outlives the effective timeout comes back `status: "timeout"` with the explanatory field
+  and the correct seconds (proving the env var is genuinely honoured, not shadowed), that a job
+  finishing inside the timeout still succeeds normally, and that the new tool descriptions are
+  discoverable from a live `tools/list` call. Confirmed a genuine red baseline (this was the only
+  failing check out of 60) before implementing.
+
 ## 0.25 (2026-09-05)
 
 - Optionally launch `claude-usage-collector` on port 8766 from `entrypoint.sh`, for the macOS

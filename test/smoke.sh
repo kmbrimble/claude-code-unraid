@@ -410,6 +410,45 @@ check "connector POST /mcp with no session id on non-initialize request still re
      -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
      -H 'authorization: Bearer $CONNECTOR_TOKEN' -d '$TOOLS_LIST')\" = 400 ]"
 
+# Connector timeout behaviour: start_session/continue_session fell back to a
+# hardcoded 5-minute SIGKILL with no explanation when timeout_seconds was
+# omitted (routine on a /feature run that includes an image build). A separate
+# container drives this for real through the MCP endpoint rather than grepping
+# source: DEFAULT_TIMEOUT_MS is set low and CLAUDE_BIN is pointed at a fake,
+# controllably-slow "claude" so no real auth is needed. Proves the env var is
+# genuinely honoured (not shadowed by a hardcoded per-tool default), that a job
+# outliving it comes back self-announcing (status, signal, seconds, and a
+# pointer at timeout_seconds), and that the happy path still works.
+TIMEOUT_NAME="${NAME}-timeout"
+TIMEOUT_HOME="$(mktemp -d)"
+TIMEOUT_TOKEN="smoketest-timeout-token"
+TIMEOUT_MS=3000
+docker run -d --name "$TIMEOUT_NAME" -v "$TIMEOUT_HOME:/root" \
+  -e CONNECTOR_TOKEN="$TIMEOUT_TOKEN" -e DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" \
+  -e CLAUDE_BIN=/root/.local/bin/fake-claude "$TAG" >/dev/null 2>&1
+sleep 3
+docker exec "$TIMEOUT_NAME" mkdir -p /root/.local/bin >/dev/null 2>&1
+FAKE_CLAUDE="$(mktemp)"
+cat > "$FAKE_CLAUDE" <<'STUB'
+#!/bin/bash
+# Stands in for the real `claude` CLI: sleeps for the number of seconds named
+# by a "SLEEP=N" token in the prompt (its last argument), then emits the same
+# single-line JSON shape `--output-format json` produces.
+prompt="${@: -1}"
+secs=0
+if [[ "$prompt" =~ SLEEP=([0-9]+) ]]; then secs="${BASH_REMATCH[1]}"; fi
+sleep "$secs"
+echo "{\"session_id\":\"fake-session\",\"result\":\"slept ${secs}s\",\"total_cost_usd\":0,\"num_turns\":1}"
+STUB
+chmod +x "$FAKE_CLAUDE"
+docker cp "$FAKE_CLAUDE" "$TIMEOUT_NAME:/root/.local/bin/fake-claude" >/dev/null 2>&1
+docker exec "$TIMEOUT_NAME" chmod +x /root/.local/bin/fake-claude >/dev/null 2>&1
+docker cp "$REPO_ROOT/test/connector_timeout_check.py" "$TIMEOUT_NAME:/tmp/connector_timeout_check.py" >/dev/null 2>&1
+check "connector honours DEFAULT_TIMEOUT_MS, self-announces a SIGKILL timeout, and leaves the happy path working" \
+  docker exec "$TIMEOUT_NAME" python3 /tmp/connector_timeout_check.py "$TIMEOUT_TOKEN" "$((TIMEOUT_MS / 1000))"
+docker rm -f "$TIMEOUT_NAME" >/dev/null 2>&1
+rm -rf "$TIMEOUT_HOME" "$FAKE_CLAUDE"
+
 # claude-usage-collector: an OPTIONAL service for the macOS usage widget
 # (github.com/kmbrimble/claude-usage-widget). Its binary is deliberately not
 # baked into the image — it lives on the persisted home mount so that project

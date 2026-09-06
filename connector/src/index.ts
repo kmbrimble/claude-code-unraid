@@ -26,7 +26,7 @@ const AUTH_TOKEN = process.env.CONNECTOR_TOKEN ?? ""; // empty = no auth (localh
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const PROJECTS_ROOT = path.resolve(process.env.PROJECTS_ROOT ?? "/workspace");
 const CLAUDE_HOME = process.env.CLAUDE_HOME ?? path.join(os.homedir(), ".claude");
-const DEFAULT_TIMEOUT_MS = Number(process.env.DEFAULT_TIMEOUT_MS ?? 5 * 60_000);
+const DEFAULT_TIMEOUT_MS = Number(process.env.DEFAULT_TIMEOUT_MS ?? 30 * 60_000);
 const SKIP_PERMISSIONS = process.env.SKIP_PERMISSIONS === "1";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,7 @@ type Job = {
   stderr: string;
   sessionId?: string;
   kill?: () => void;
+  timeoutMs: number;
 };
 const jobs = new Map<string, Job>();
 
@@ -66,6 +67,7 @@ function runProcess(
   cwd: string,
   opts: { timeoutMs?: number; stdin?: string; env?: NodeJS.ProcessEnv } = {},
 ): Job {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const job: Job = {
     id: randomUUID(),
     kind,
@@ -75,6 +77,7 @@ function runProcess(
     status: "running",
     stdout: "",
     stderr: "",
+    timeoutMs,
   };
   jobs.set(job.id, job);
 
@@ -90,7 +93,7 @@ function runProcess(
       job.status = "timeout";
       child.kill("SIGKILL");
     }
-  }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  }, timeoutMs);
 
   child.on("close", (code) => {
     clearTimeout(timer);
@@ -145,6 +148,11 @@ function summariseJob(job: Job, truncate = 20_000) {
     num_turns: parsed?.num_turns,
     stdout: parsed ? undefined : job.stdout.slice(-truncate),
     stderr: job.stderr.slice(-truncate) || undefined,
+    timeout: job.status === "timeout" ? {
+      seconds: job.timeoutMs / 1000,
+      signal: "SIGKILL",
+      message: `Killed after exceeding its ${job.timeoutMs / 1000}s timeout. This is a hard SIGKILL, not a graceful stop — no cleanup ran. Pass a larger timeout_seconds next time to allow more time.`,
+    } : undefined,
   };
 }
 
@@ -307,7 +315,12 @@ function buildServer(): McpServer {
     permission_mode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]).optional(),
     append_system_prompt: z.string().optional(),
     wait_seconds: z.number().min(0).max(600).default(120).describe("How long to block waiting for completion before returning a job_id to poll."),
-    timeout_seconds: z.number().min(10).max(3600).optional().describe("Hard kill after this many seconds."),
+    timeout_seconds: z.number().min(10).max(3600).optional().describe(
+      `Hard kill (SIGKILL, not graceful — no cleanup runs) after this many seconds. If omitted, the ` +
+      `connector's effective default applies (currently ${DEFAULT_TIMEOUT_MS / 1000}s, set by the ` +
+      `DEFAULT_TIMEOUT_MS env var). A killed job's result explains the kill; pass a larger value here ` +
+      `for anything that might run long, such as a build.`,
+    ),
   };
 
   server.registerTool(
@@ -359,7 +372,9 @@ function buildServer(): McpServer {
         project: z.string(),
         command: z.string(),
         wait_seconds: z.number().min(0).max(600).default(60),
-        timeout_seconds: z.number().min(1).max(3600).default(600),
+        timeout_seconds: z.number().min(1).max(3600).default(600).describe(
+          "Hard kill (SIGKILL, not graceful — no cleanup runs) after this many seconds. Defaults to 600s if omitted.",
+        ),
       },
     },
     async (a) => {
@@ -393,7 +408,11 @@ function buildServer(): McpServer {
 
   server.registerTool(
     "cancel_job",
-    { title: "Cancel a job", description: "Send SIGTERM to a running job.", inputSchema: { job_id: z.string() } },
+    {
+      title: "Cancel a job",
+      description: "Gracefully stop a running job with SIGTERM — unlike a timeout, which is a hard SIGKILL with no cleanup.",
+      inputSchema: { job_id: z.string() },
+    },
     async ({ job_id }) => {
       const job = jobs.get(job_id);
       if (!job) return text({ error: "unknown job_id" });
