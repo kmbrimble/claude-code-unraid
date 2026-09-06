@@ -96,6 +96,34 @@ can silently change installed tool versions if the image changed.
   passed. A timeout does **not** mean the underlying job failed or wasn't started — call
   `list_jobs` to find the job that's actually running (it will show as `status: running`) and
   poll `get_job` on that job id instead of re-issuing the original command.
+- **Two different timeouts, and confusing them is expensive.** They are unrelated and have
+  opposite consequences:
+
+  | | What it is | Effect | Fixable here? |
+  |---|---|---|---|
+  | **~60s** | Transport gives up on a blocking call (client/proxy side, above the connector) | Cosmetic. Forces polling — the stop-start rhythm. **The job keeps running.** | No, not ours |
+  | **`DEFAULT_TIMEOUT_MS`** | The connector's own timer | **SIGKILL.** Work destroyed mid-flight, no cleanup | Yes |
+
+  The chunky stop-start progress people notice is the *first* one and is harmless. If a long
+  job silently loses its work, that is the *second* one. A session once concluded the
+  connector "cuts the connection after about four minutes", treated the chunking as the
+  explanation, and carried on while its long jobs were being killed.
+- **Job timeout (`DEFAULT_TIMEOUT_MS`).** Applies when a caller omits `timeout_seconds`.
+  Set in the unRAID template — **the value is in MILLISECONDS** (`1800000` = 30 minutes);
+  `1800` would be 1.8 seconds. The built-in fallback is also 30 minutes as of 0.26 (it was
+  5 minutes before, which routinely killed `/feature` runs that included an image build).
+  Exceeding it is a hard `SIGKILL`: no cleanup, no exit code, and a session killed mid-write
+  can leave a partial file or a dirty tree. `cancel_job` is the graceful path — it sends
+  `SIGTERM`.
+- **Why `timeout_seconds` deliberately has no per-tool default on `start_session` /
+  `continue_session`.** Giving them one would make `opts.timeoutMs` always defined, shadowing
+  `DEFAULT_TIMEOUT_MS` and silently making the template variable inert — you would set it,
+  see no change, and have no way to tell why. The omitted case must keep falling through to
+  the env var. `run_command` is the exception and legitimately defaults to 600s.
+- Since 0.26 a killed job **announces itself**: the result carries a `timeout` object with the
+  effective seconds, `signal: "SIGKILL"`, and a pointer at `timeout_seconds`. Before that it
+  returned a bare `status: "timeout"` with no `finished_at`, which was easy to misread as a
+  hang. If you see that bare shape, the connector is older than 0.26.
 
 ## 4a. PAL MCP server (code-review advisor)
 
@@ -194,6 +222,11 @@ image take effect."
 
 ## 7. Traps and lessons
 
+- **A finished job is not a completed task.** A headless `claude -p` session can end its turn
+  mid-work — one ended with "I'll wait for the smoke test to finish before continuing", which
+  it cannot do, since ending the turn ends the run. The job reported `status: done` and
+  `exit_code: 0` with only a checkpoint commit and nothing implemented. Always verify a
+  hand-back against `git log` and the working tree, never against the job's status field.
 - **`/proc/uptime` inside this container reports the HOST's uptime**, not the container's. Use
   `docker inspect --format '{{.State.StartedAt}}' claude-code'` (run from the host, or via SSH)
   to find when the container itself actually started.
