@@ -419,35 +419,124 @@ check "connector POST /mcp with no session id on non-initialize request still re
 # genuinely honoured (not shadowed by a hardcoded per-tool default), that a job
 # outliving it comes back self-announcing (status, signal, seconds, and a
 # pointer at timeout_seconds), and that the happy path still works.
-TIMEOUT_NAME="${NAME}-timeout"
-TIMEOUT_HOME="$(mktemp -d)"
+#
+# 0.27 extends this to the rest of the wait/kill contract: the MAX_WAIT_SECONDS
+# clamp (the client abandons a blocking call long before wait_seconds elapses,
+# so the connector must return a pollable job instead), the per-job deadline
+# fields, live progress read from the tail of the session transcript, and the
+# SIGTERM->SIGKILL escalation. Two containers, because the idle timeout has to
+# be off in the first one or it would fire before the wall clock and mask it.
 TIMEOUT_TOKEN="smoketest-timeout-token"
 TIMEOUT_MS=3000
-docker run -d --name "$TIMEOUT_NAME" -v "$TIMEOUT_HOME:/root" \
-  -e CONNECTOR_TOKEN="$TIMEOUT_TOKEN" -e DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" \
-  -e CLAUDE_BIN=/root/.local/bin/fake-claude "$TAG" >/dev/null 2>&1
-sleep 3
-docker exec "$TIMEOUT_NAME" mkdir -p /root/.local/bin >/dev/null 2>&1
+GRACE_MS=2000
+MAX_WAIT=8
+
+# The fake `claude`, shared by both containers. Modes are named by tokens in
+# the prompt (its last argument):
+#   SLEEP=N     how long the "session" runs
+#   ACTIVE=1    append a transcript line every second (a slow but live job)
+#   TRAP_TERM=1 ignore SIGTERM, so only the SIGKILL escalation can end it
+#   BIGLOG=1    leave a >512MB sparse transcript, which a whole-file utf8 read
+#               cannot even hold in a JS string — so a passing progress check
+#               proves the connector really did read only the tail
 FAKE_CLAUDE="$(mktemp)"
 cat > "$FAKE_CLAUDE" <<'STUB'
 #!/bin/bash
-# Stands in for the real `claude` CLI: sleeps for the number of seconds named
-# by a "SLEEP=N" token in the prompt (its last argument), then emits the same
-# single-line JSON shape `--output-format json` produces.
+# Stands in for the real `claude` CLI, including the session transcript it
+# writes to ~/.claude/projects/<cwd with / and . as ->/<session-id>.jsonl.
 prompt="${@: -1}"
 secs=0
-if [[ "$prompt" =~ SLEEP=([0-9]+) ]]; then secs="${BASH_REMATCH[1]}"; fi
-sleep "$secs"
-echo "{\"session_id\":\"fake-session\",\"result\":\"slept ${secs}s\",\"total_cost_usd\":0,\"num_turns\":1}"
+[[ "$prompt" =~ SLEEP=([0-9]+) ]] && secs="${BASH_REMATCH[1]}"
+
+sid=""
+prev=""
+for a in "$@"; do
+  case "$prev" in --session-id|--resume) sid="$a";; esac
+  prev="$a"
+done
+[ -n "$sid" ] || sid="fake-session"
+logdir="$HOME/.claude/projects/$(pwd | tr '/.' '--')"
+mkdir -p "$logdir"
+log="$logdir/$sid.jsonl"
+# FORK=1: write to a different id, the way a resumed session that forks does —
+# the file named by the session id stays put and stops being appended to.
+[[ "$prompt" == *FORK=1* ]] && log="$logdir/$sid-fork.jsonl"
+event() { echo "{\"type\":\"assistant\",\"timestamp\":\"$(date -Is)\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$1\"}]}}" >> "$log"; }
+
+if [[ "$prompt" == *BIGLOG=1* ]]; then
+  : > "$log"
+  truncate -s 600M "$log"   # sparse: bytes on paper, not on disk
+  printf '\n' >> "$log"     # so the tail's leading partial line is the NUL run
+  event "big-log started"
+fi
+
+if [[ "$prompt" == *TRAP_TERM=1* ]]; then
+  # No child process to absorb the signal, and TERM ignored: a busy wait is
+  # the only thing here that genuinely survives SIGTERM.
+  trap '' TERM
+  event "ignoring SIGTERM"
+  end=$((SECONDS + secs))
+  while ((SECONDS < end)); do :; done
+elif [[ "$prompt" == *ACTIVE=1* ]]; then
+  # Heartbeat well inside the idle timeout the tests use: a 1s beat against a
+  # 2s timer left only 1s of slack and flaked on a loaded host.
+  for ((i = 0; i < secs * 4; i++)); do sleep 0.25; event "working $i"; done
+else
+  sleep "$secs"
+fi
+
+event "done"
+echo "{\"session_id\":\"$sid\",\"result\":\"slept ${secs}s\",\"total_cost_usd\":0,\"num_turns\":1}"
 STUB
 chmod +x "$FAKE_CLAUDE"
-docker cp "$FAKE_CLAUDE" "$TIMEOUT_NAME:/root/.local/bin/fake-claude" >/dev/null 2>&1
-docker exec "$TIMEOUT_NAME" chmod +x /root/.local/bin/fake-claude >/dev/null 2>&1
-docker cp "$REPO_ROOT/test/connector_timeout_check.py" "$TIMEOUT_NAME:/tmp/connector_timeout_check.py" >/dev/null 2>&1
-check "connector honours DEFAULT_TIMEOUT_MS, self-announces a SIGKILL timeout, and leaves the happy path working" \
-  docker exec "$TIMEOUT_NAME" python3 /tmp/connector_timeout_check.py "$TIMEOUT_TOKEN" "$((TIMEOUT_MS / 1000))"
+
+# Both containers get the stub and the checker script. Wait for the connector
+# to actually be listening first: a fixed sleep raced it on a loaded host, and
+# the resulting connection refused looked like a behavioural failure.
+install_connector_fixtures() {
+  for _ in $(seq 30); do
+    docker exec "$1" curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1 && break
+    sleep 1
+  done
+  docker exec "$1" mkdir -p /root/.local/bin >/dev/null 2>&1
+  docker cp "$FAKE_CLAUDE" "$1:/root/.local/bin/fake-claude" >/dev/null 2>&1
+  docker exec "$1" chmod +x /root/.local/bin/fake-claude >/dev/null 2>&1
+  docker cp "$REPO_ROOT/test/connector_timeout_check.py" "$1:/tmp/connector_timeout_check.py" >/dev/null 2>&1
+}
+
+TIMEOUT_NAME="${NAME}-timeout"
+TIMEOUT_HOME="$(mktemp -d)"
+docker run -d --name "$TIMEOUT_NAME" -v "$TIMEOUT_HOME:/root" \
+  -e CONNECTOR_TOKEN="$TIMEOUT_TOKEN" -e DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" \
+  -e KILL_GRACE_MS="$GRACE_MS" -e MAX_WAIT_SECONDS="$MAX_WAIT" \
+  -e CLAUDE_BIN=/root/.local/bin/fake-claude "$TAG" >/dev/null 2>&1
+sleep 3
+install_connector_fixtures "$TIMEOUT_NAME"
+check "connector honours DEFAULT_TIMEOUT_MS, escalates SIGTERM to SIGKILL, clamps wait_seconds, reports deadlines, and tails live progress" \
+  docker exec "$TIMEOUT_NAME" python3 /tmp/connector_timeout_check.py \
+    --mode=timeout "$TIMEOUT_TOKEN" "$((TIMEOUT_MS / 1000))" "$MAX_WAIT" "$((GRACE_MS / 1000))"
 docker rm -f "$TIMEOUT_NAME" >/dev/null 2>&1
-rm -rf "$TIMEOUT_HOME" "$FAKE_CLAUDE"
+rm -rf "$TIMEOUT_HOME"
+
+# Idle timeout: kills a job that has stopped making progress, not one that is
+# merely long. The wall clock is deliberately set far out of reach here, so a
+# kill can only have come from the idle timer — and the active job proves the
+# timer reads the session transcript, since a `claude -p` job produces no
+# stdout at all until it finishes.
+IDLE_NAME="${NAME}-idle"
+IDLE_HOME="$(mktemp -d)"
+IDLE_MS=2000
+docker run -d --name "$IDLE_NAME" -v "$IDLE_HOME:/root" \
+  -e CONNECTOR_TOKEN="$TIMEOUT_TOKEN" -e DEFAULT_TIMEOUT_MS=60000 \
+  -e IDLE_TIMEOUT_MS="$IDLE_MS" -e KILL_GRACE_MS="$GRACE_MS" -e MAX_WAIT_SECONDS=20 \
+  -e CLAUDE_BIN=/root/.local/bin/fake-claude "$TAG" >/dev/null 2>&1
+sleep 3
+install_connector_fixtures "$IDLE_NAME"
+check "connector's IDLE_TIMEOUT_MS kills a stalled job and spares a slow but transcript-active one" \
+  docker exec "$IDLE_NAME" python3 /tmp/connector_timeout_check.py \
+    --mode=idle "$TIMEOUT_TOKEN" "$((IDLE_MS / 1000))"
+docker rm -f "$IDLE_NAME" >/dev/null 2>&1
+rm -rf "$IDLE_HOME" "$FAKE_CLAUDE"
 
 # claude-usage-collector: an OPTIONAL service for the macOS usage widget
 # (github.com/kmbrimble/claude-usage-widget). Its binary is deliberately not

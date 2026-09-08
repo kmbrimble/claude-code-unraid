@@ -28,6 +28,17 @@ const PROJECTS_ROOT = path.resolve(process.env.PROJECTS_ROOT ?? "/workspace");
 const CLAUDE_HOME = process.env.CLAUDE_HOME ?? path.join(os.homedir(), ".claude");
 const DEFAULT_TIMEOUT_MS = Number(process.env.DEFAULT_TIMEOUT_MS ?? 30 * 60_000);
 const SKIP_PERMISSIONS = process.env.SKIP_PERMISSIONS === "1";
+// Ceiling on any blocking wait. The MCP *client* abandons a single tool call
+// after a fixed, client-dependent period (seen at ~60s and at 180s) while the
+// job underneath keeps running; waiting longer than that just loses the reply.
+const MAX_WAIT_SECONDS = Number(process.env.MAX_WAIT_SECONDS ?? 55);
+// Idle timeout: 0 = disabled, so DEFAULT_TIMEOUT_MS keeps its 0.26 semantics.
+const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? 0);
+// How long a killed job gets to exit on SIGTERM before it is SIGKILLed.
+const KILL_GRACE_MS = Number(process.env.KILL_GRACE_MS ?? 10_000);
+// Never read more than this from the tail of a session transcript: the live
+// ones reach tens of megabytes.
+const TAIL_BYTES = 256_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +57,15 @@ type Job = {
   sessionId?: string;
   kill?: () => void;
   timeoutMs: number;
+  idleTimeoutMs: number;
+  /** Epoch ms of the last observed sign of life (output, or transcript growth). */
+  lastActivity: number;
+  /** Set when a kill has been started; status only settles once the child closes. */
+  terminating?: { kind: "wall_clock" | "idle" | "cancel"; at: string };
+  /** True once the grace period expired and SIGKILL was sent. */
+  escalated?: boolean;
+  /** The signal that actually ended the process, per the `close` event. */
+  signal?: string | null;
 };
 const jobs = new Map<string, Job>();
 
@@ -65,9 +85,10 @@ function runProcess(
   cmd: string,
   args: string[],
   cwd: string,
-  opts: { timeoutMs?: number; stdin?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: { timeoutMs?: number; idleTimeoutMs?: number; stdin?: string; env?: NodeJS.ProcessEnv } = {},
 ): Job {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const idleTimeoutMs = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
   const job: Job = {
     id: randomUUID(),
     kind,
@@ -78,36 +99,150 @@ function runProcess(
     stdout: "",
     stderr: "",
     timeoutMs,
+    idleTimeoutMs,
+    lastActivity: Date.now(),
   };
   jobs.set(job.id, job);
 
-  const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env }, shell: false });
-  job.kill = () => child.kill("SIGTERM");
-  child.stdout.on("data", (d) => (job.stdout += d.toString()));
-  child.stderr.on("data", (d) => (job.stderr += d.toString()));
+  // detached: the child leads its own process group, so a kill reaches its
+  // grandchildren too. Without it, killing `bash -lc` orphans the real work,
+  // which keeps running AND holds the stdout pipe open so `close` never fires.
+  const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env }, shell: false, detached: true });
+  const alive = () => child.exitCode === null && child.signalCode === null;
+  const signalGroup = (sig: NodeJS.Signals) => {
+    try { if (child.pid) process.kill(-child.pid, sig); } catch { try { child.kill(sig); } catch {} }
+  };
+  /** Graceful stop: SIGTERM, then SIGKILL only if it is still alive after the grace period. */
+  const terminate = (reason: NonNullable<Job["terminating"]>["kind"]) => {
+    if (job.terminating || !alive()) return;
+    job.terminating = { kind: reason, at: new Date().toISOString() };
+    signalGroup("SIGTERM");
+    setTimeout(() => {
+      if (alive()) { job.escalated = true; signalGroup("SIGKILL"); }
+    }, KILL_GRACE_MS).unref();
+  };
+  job.kill = () => terminate("cancel");
+
+  const onOutput = (stream: "stdout" | "stderr") => (d: Buffer) => {
+    job[stream] += d.toString();
+    job.lastActivity = Date.now();
+  };
+  child.stdout.on("data", onOutput("stdout"));
+  child.stderr.on("data", onOutput("stderr"));
   if (opts.stdin !== undefined) child.stdin.end(opts.stdin);
   else child.stdin.end();
 
-  const timer = setTimeout(() => {
-    if (job.status === "running") {
-      job.status = "timeout";
-      child.kill("SIGKILL");
-    }
-  }, timeoutMs);
+  const wallTimer = setTimeout(() => terminate("wall_clock"), timeoutMs);
+  // A `claude -p` job prints nothing until it finishes, so its only usable
+  // liveness signal is its session transcript being appended to.
+  const idleTimer = idleTimeoutMs > 0 ? setInterval(async () => {
+    if (job.terminating || Date.now() - job.lastActivity < idleTimeoutMs) return;
+    // Only a Claude job has a transcript. A shell job is judged on its output
+    // alone, as run_command advertises — otherwise the newest-file fallback
+    // would let an unrelated session in the same project keep it alive.
+    const fp = job.kind === "claude" ? await sessionLogPath(job) : null;
+    const st = fp ? await fs.stat(fp).catch(() => null) : null;
+    if (st && st.mtimeMs > job.lastActivity) { job.lastActivity = st.mtimeMs; return; }
+    if (Date.now() - job.lastActivity >= idleTimeoutMs) terminate("idle");
+  }, 1000) : undefined;
 
-  child.on("close", (code) => {
-    clearTimeout(timer);
-    job.exitCode = code;
+  const settle = () => {
+    clearTimeout(wallTimer);
+    if (idleTimer) clearInterval(idleTimer);
     job.finishedAt = new Date().toISOString();
-    if (job.status === "running") job.status = code === 0 ? "done" : "error";
+  };
+  child.on("close", (code, signal) => {
+    settle();
+    job.exitCode = code;
+    job.signal = signal;
+    if (job.status === "running") {
+      const killed = job.terminating?.kind;
+      job.status = killed === "wall_clock" || killed === "idle" ? "timeout" : code === 0 ? "done" : "error";
+    }
   });
   child.on("error", (e) => {
-    clearTimeout(timer);
+    settle();
     job.status = "error";
     job.stderr += String(e);
-    job.finishedAt = new Date().toISOString();
   });
   return job;
+}
+
+/**
+ * The session transcript this job is writing, or null.
+ *
+ * Prefers the file named by the job's session id; falls back to the newest
+ * `.jsonl` in the project's session directory, because a resumed session can
+ * be recorded under a forked id. The fallback ignores files untouched since
+ * the job started, so an unrelated older session is never mistaken for this
+ * job's progress — or for it still being alive.
+ * ponytail: two concurrent jobs in one project can still cross-feed liveness
+ * through the fallback; per-job id tracking if that ever matters.
+ */
+async function sessionLogPath(job: Job): Promise<string | null> {
+  const dir = path.join(CLAUDE_HOME, "projects", encodeProjectDir(job.cwd));
+  const startedMs = Date.parse(job.startedAt);
+  // The named file existing is not enough: on a resume it always exists, and if
+  // the session forks to a new id it stops being written to. Only trust it while
+  // it is actually being appended to.
+  const preferred = job.sessionId ? path.join(dir, `${job.sessionId}.jsonl`) : null;
+  const preferredStat = preferred ? await fs.stat(preferred).catch(() => null) : null;
+  if (preferredStat && preferredStat.mtimeMs >= startedMs) return preferred;
+  let best: { p: string; m: number } | null = null;
+  for (const f of await fs.readdir(dir).catch(() => [] as string[])) {
+    if (!f.endsWith(".jsonl")) continue;
+    const p = path.join(dir, f);
+    const st = await fs.stat(p).catch(() => null);
+    if (!st || st.mtimeMs < startedMs) continue;
+    if (!best || st.mtimeMs > best.m) best = { p, m: st.mtimeMs };
+  }
+  // Nothing has been written since this job started: fall back to the named
+  // file anyway, so a just-resumed session still shows its history.
+  return best?.p ?? (preferredStat ? preferred : null);
+}
+
+/** Shape one transcript JSONL line into a {role, ts, text} event, or null if it isn't one. */
+function transcriptEvent(line: string): { role: string; ts?: string; text: string } | null {
+  try {
+    const o = JSON.parse(line);
+    if (o.type !== "user" && o.type !== "assistant") return null;
+    const c = o.message?.content;
+    const parts = typeof c === "string" ? [c] : Array.isArray(c) ? c.map((x: any) =>
+      x.type === "text" ? x.text : x.type === "tool_use" ? `[tool_use ${x.name}] ${JSON.stringify(x.input).slice(0, 300)}` : x.type === "tool_result" ? `[tool_result] ${String(typeof x.content === "string" ? x.content : JSON.stringify(x.content)).slice(0, 300)}` : "") : [];
+    return { role: o.type, ts: o.timestamp, text: parts.join("\n") };
+  } catch { return null; }
+}
+
+/** Last N transcript events, read from the tail of the file only — these reach tens of MB. */
+async function tailTranscript(fp: string, lastN: number) {
+  const fh = await fs.open(fp, "r");
+  try {
+    const { size } = await fh.stat();
+    const want = Math.min(size, TAIL_BYTES);
+    const buf = Buffer.alloc(want);
+    await fh.read(buf, 0, want, size - want);
+    let s = buf.toString("utf8");
+    if (size > want) s = s.slice(s.indexOf("\n") + 1); // drop the leading partial line
+    const events = s.split("\n").map(transcriptEvent).filter(Boolean);
+    return { events: events.slice(-lastN), transcript_path: fp, transcript_bytes: size, tail_bytes_read: want };
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Blocking waits are capped: past MAX_WAIT_SECONDS the client has already given up on the call. */
+function clampWait(requested: number) {
+  const applied = Math.min(requested, MAX_WAIT_SECONDS);
+  if (applied >= requested) return { applied, note: undefined };
+  return {
+    applied,
+    note: {
+      requested_seconds: requested,
+      applied_seconds: applied,
+      max_wait_seconds: MAX_WAIT_SECONDS,
+      reason: `Clamped to MAX_WAIT_SECONDS (${MAX_WAIT_SECONDS}s): the MCP client abandons a blocking tool call before then. The job keeps running — poll get_job with the job_id above.`,
+    },
+  };
 }
 
 function waitForJob(job: Job, maxWaitMs: number): Promise<Job> {
@@ -133,9 +268,40 @@ function parseClaudeJson(stdout: string): Record<string, unknown> | null {
   return null;
 }
 
+function jobDeadlines(job: Job) {
+  const startedMs = Date.parse(job.startedAt);
+  const endMs = job.finishedAt ? Date.parse(job.finishedAt) : Date.now();
+  return {
+    elapsed_seconds: Math.round((endMs - startedMs) / 100) / 10,
+    timeout_seconds: job.timeoutMs / 1000,
+    deadline_at: new Date(startedMs + job.timeoutMs).toISOString(),
+    idle_timeout_seconds: job.idleTimeoutMs > 0 ? job.idleTimeoutMs / 1000 : undefined,
+  };
+}
+
+function timeoutInfo(job: Job) {
+  if (job.status !== "timeout") return undefined;
+  const kind = job.terminating?.kind === "idle" ? "idle" : "wall_clock";
+  const seconds = kind === "idle" ? job.idleTimeoutMs / 1000 : job.timeoutMs / 1000;
+  const ending = job.escalated
+    ? `it ignored SIGTERM and was SIGKILLed after the ${KILL_GRACE_MS / 1000}s grace period, so no cleanup ran`
+    : `it exited on SIGTERM within the ${KILL_GRACE_MS / 1000}s grace period`;
+  return {
+    kind,
+    seconds,
+    signal: job.signal ?? (job.escalated ? "SIGKILL" : "SIGTERM"),
+    escalated: !!job.escalated,
+    message: kind === "idle"
+      ? `Killed after ${seconds}s with no output and no session-transcript activity: ${ending}. Pass a larger idle_timeout_seconds (or 0 to disable the idle timer) for work that is legitimately quiet for long stretches.`
+      : `Killed after exceeding its ${seconds}s wall-clock timeout: SIGTERM first, then SIGKILL if still alive — ${ending}. Pass a larger timeout_seconds next time to allow more time.`,
+  };
+}
+
 function summariseJob(job: Job, truncate = 20_000) {
   const parsed = job.kind === "claude" ? parseClaudeJson(job.stdout) : null;
   return {
+    ...jobDeadlines(job),
+    terminating: job.terminating && !job.finishedAt ? job.terminating : undefined,
     job_id: job.id,
     status: job.status,
     exit_code: job.exitCode,
@@ -148,12 +314,21 @@ function summariseJob(job: Job, truncate = 20_000) {
     num_turns: parsed?.num_turns,
     stdout: parsed ? undefined : job.stdout.slice(-truncate),
     stderr: job.stderr.slice(-truncate) || undefined,
-    timeout: job.status === "timeout" ? {
-      seconds: job.timeoutMs / 1000,
-      signal: "SIGKILL",
-      message: `Killed after exceeding its ${job.timeoutMs / 1000}s timeout. This is a hard SIGKILL, not a graceful stop — no cleanup ran. Pass a larger timeout_seconds next time to allow more time.`,
-    } : undefined,
+    timeout: timeoutInfo(job),
   };
+}
+
+/** summariseJob plus, on request, the tail of the session transcript this job is writing. */
+async function summariseJobWithProgress(job: Job, progressEvents: number) {
+  const base = summariseJob(job);
+  if (!progressEvents || job.kind !== "claude") return base;
+  const fp = await sessionLogPath(job);
+  if (!fp) return { ...base, progress: { events: [], note: "No session transcript found yet for this job." } };
+  try {
+    return { ...base, progress: await tailTranscript(fp, progressEvents) };
+  } catch (e) {
+    return { ...base, progress: { events: [], note: `Could not read ${fp}: ${e}` } };
+  }
 }
 
 function claudeArgs(o: {
@@ -287,18 +462,7 @@ function buildServer(): McpServer {
       for (const d of candidates) {
         const fp = path.join(root, d, `${session_id}.jsonl`);
         try {
-          const lines = (await fs.readFile(fp, "utf8")).trim().split("\n");
-          const msgs: any[] = [];
-          for (const l of lines) {
-            try {
-              const o = JSON.parse(l);
-              if (o.type !== "user" && o.type !== "assistant") continue;
-              const c = o.message?.content;
-              const parts = typeof c === "string" ? [c] : Array.isArray(c) ? c.map((x: any) =>
-                x.type === "text" ? x.text : x.type === "tool_use" ? `[tool_use ${x.name}] ${JSON.stringify(x.input).slice(0, 300)}` : x.type === "tool_result" ? `[tool_result] ${String(typeof x.content === "string" ? x.content : JSON.stringify(x.content)).slice(0, 300)}` : "") : [];
-              msgs.push({ role: o.type, ts: o.timestamp, text: parts.join("\n") });
-            } catch {}
-          }
+          const msgs = (await fs.readFile(fp, "utf8")).trim().split("\n").map(transcriptEvent).filter(Boolean);
           return text({ session_id, project_dir_key: d, messages: msgs.slice(-last_n) });
         } catch {}
       }
@@ -314,9 +478,22 @@ function buildServer(): McpServer {
     allowed_tools: z.array(z.string()).optional().describe('e.g. ["Read","Edit","Bash(git *)"]'),
     permission_mode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]).optional(),
     append_system_prompt: z.string().optional(),
-    wait_seconds: z.number().min(0).max(600).default(120).describe("How long to block waiting for completion before returning a job_id to poll."),
+    wait_seconds: z.number().min(0).max(600).default(MAX_WAIT_SECONDS).describe(
+      `How long to block waiting for completion before returning a job_id to poll. Clamped at ` +
+      `runtime to MAX_WAIT_SECONDS (currently ${MAX_WAIT_SECONDS}s) because the MCP client gives up ` +
+      `on a blocking call before then; the clamp is reported in the result and the job keeps running.`,
+    ),
+    idle_timeout_seconds: z.number().min(0).max(3600).optional().describe(
+      `Kill the job after this many seconds with no output and no session-transcript activity — a ` +
+      `stalled job, as opposed to a merely long one. 0 disables it. If omitted, IDLE_TIMEOUT_MS ` +
+      `applies (currently ${IDLE_TIMEOUT_MS / 1000}s; 0 means no idle timer).`,
+    ),
+    progress_events: z.number().int().min(0).max(50).default(0).describe(
+      "If >0, include the last N events from this session's live transcript in the result.",
+    ),
     timeout_seconds: z.number().min(10).max(3600).optional().describe(
-      `Hard kill (SIGKILL, not graceful — no cleanup runs) after this many seconds. If omitted, the ` +
+      `Kill (SIGTERM, then SIGKILL after ${KILL_GRACE_MS / 1000}s if it hasn't exited) after this ` +
+      `many seconds of wall clock. If omitted, the ` +
       `connector's effective default applies (currently ${DEFAULT_TIMEOUT_MS / 1000}s, set by the ` +
       `DEFAULT_TIMEOUT_MS env var). A killed job's result explains the kill; pass a larger value here ` +
       `for anything that might run long, such as a build.`,
@@ -337,10 +514,14 @@ function buildServer(): McpServer {
       const job = runProcess("claude", CLAUDE_BIN, claudeArgs({
         prompt: a.prompt, sessionId, model: a.model, maxTurns: a.max_turns, allowedTools: a.allowed_tools,
         systemPrompt: a.append_system_prompt, permissionMode: a.permission_mode,
-      }), cwd, { timeoutMs: a.timeout_seconds ? a.timeout_seconds * 1000 : undefined });
+      }), cwd, {
+        timeoutMs: a.timeout_seconds ? a.timeout_seconds * 1000 : undefined,
+        idleTimeoutMs: a.idle_timeout_seconds !== undefined ? a.idle_timeout_seconds * 1000 : undefined,
+      });
       job.sessionId = sessionId;
-      await waitForJob(job, a.wait_seconds * 1000);
-      return text(summariseJob(job));
+      const wait = clampWait(a.wait_seconds);
+      await waitForJob(job, wait.applied * 1000);
+      return text({ ...await summariseJobWithProgress(job, a.progress_events), wait_clamped: wait.note });
     },
   );
 
@@ -356,10 +537,14 @@ function buildServer(): McpServer {
       const job = runProcess("claude", CLAUDE_BIN, claudeArgs({
         prompt: a.prompt, resume: a.session_id, model: a.model, maxTurns: a.max_turns, allowedTools: a.allowed_tools,
         systemPrompt: a.append_system_prompt, permissionMode: a.permission_mode,
-      }), cwd, { timeoutMs: a.timeout_seconds ? a.timeout_seconds * 1000 : undefined });
+      }), cwd, {
+        timeoutMs: a.timeout_seconds ? a.timeout_seconds * 1000 : undefined,
+        idleTimeoutMs: a.idle_timeout_seconds !== undefined ? a.idle_timeout_seconds * 1000 : undefined,
+      });
       job.sessionId = a.session_id;
-      await waitForJob(job, a.wait_seconds * 1000);
-      return text(summariseJob(job));
+      const wait = clampWait(a.wait_seconds);
+      await waitForJob(job, wait.applied * 1000);
+      return text({ ...await summariseJobWithProgress(job, a.progress_events), wait_clamped: wait.note });
     },
   );
 
@@ -371,17 +556,26 @@ function buildServer(): McpServer {
       inputSchema: {
         project: z.string(),
         command: z.string(),
-        wait_seconds: z.number().min(0).max(600).default(60),
+        wait_seconds: z.number().min(0).max(600).default(MAX_WAIT_SECONDS).describe(
+          `Clamped at runtime to MAX_WAIT_SECONDS (currently ${MAX_WAIT_SECONDS}s); the job keeps running, poll get_job.`,
+        ),
+        idle_timeout_seconds: z.number().min(0).max(3600).optional().describe(
+          "Kill the command after this many seconds with no output. 0 disables it; omitted uses IDLE_TIMEOUT_MS.",
+        ),
         timeout_seconds: z.number().min(1).max(3600).default(600).describe(
-          "Hard kill (SIGKILL, not graceful — no cleanup runs) after this many seconds. Defaults to 600s if omitted.",
+          `Kill (SIGTERM, then SIGKILL after ${KILL_GRACE_MS / 1000}s if it hasn't exited) after this many seconds. Defaults to 600s if omitted.`,
         ),
       },
     },
     async (a) => {
       const cwd = safeProjectPath(a.project);
-      const job = runProcess("shell", "bash", ["-lc", a.command], cwd, { timeoutMs: a.timeout_seconds * 1000 });
-      await waitForJob(job, a.wait_seconds * 1000);
-      return text(summariseJob(job));
+      const job = runProcess("shell", "bash", ["-lc", a.command], cwd, {
+        timeoutMs: a.timeout_seconds * 1000,
+        idleTimeoutMs: a.idle_timeout_seconds !== undefined ? a.idle_timeout_seconds * 1000 : undefined,
+      });
+      const wait = clampWait(a.wait_seconds);
+      await waitForJob(job, wait.applied * 1000);
+      return text({ ...summariseJob(job), wait_clamped: wait.note });
     },
   );
 
@@ -389,35 +583,60 @@ function buildServer(): McpServer {
     "get_job",
     {
       title: "Poll a running job",
-      description: "Get status/output of a job started by start_session, continue_session or run_command.",
-      inputSchema: { job_id: z.string(), wait_seconds: z.number().min(0).max(600).default(0) },
+      description: `Get status/output of a job started by start_session, continue_session or run_command. Pass progress_events to see what a running Claude session is doing right now: a job with --output-format json prints nothing until it finishes, so its live transcript is the only view into it.`,
+      inputSchema: {
+        job_id: z.string(),
+        wait_seconds: z.number().min(0).max(600).default(0).describe(
+          `Clamped at runtime to MAX_WAIT_SECONDS (currently ${MAX_WAIT_SECONDS}s).`,
+        ),
+        progress_events: z.number().int().min(0).max(50).default(0).describe(
+          "If >0, include the last N events from this job's live session transcript (tail-read only).",
+        ),
+      },
     },
-    async ({ job_id, wait_seconds }) => {
+    async ({ job_id, wait_seconds, progress_events }) => {
       const job = jobs.get(job_id);
       if (!job) return text({ error: "unknown job_id" });
-      await waitForJob(job, wait_seconds * 1000);
-      return text(summariseJob(job));
+      const wait = clampWait(wait_seconds);
+      await waitForJob(job, wait.applied * 1000);
+      return text({ ...await summariseJobWithProgress(job, progress_events), wait_clamped: wait.note });
     },
   );
 
   server.registerTool(
     "list_jobs",
-    { title: "List jobs", description: "List all jobs known to this connector (running and finished).", inputSchema: {} },
-    async () => text({ jobs: [...jobs.values()].map((j) => ({ job_id: j.id, kind: j.kind, status: j.status, cwd: j.cwd, session_id: j.sessionId, started_at: j.startedAt, command: j.command.slice(0, 200) })) }),
+    {
+      title: "List jobs",
+      description: "List all jobs known to this connector (running and finished), with each job's own deadline, plus the connector-wide wait/timeout settings. This is the recovery path after a blocking call was cut short by the client.",
+      inputSchema: {},
+    },
+    async () => text({
+      settings: {
+        max_wait_seconds: MAX_WAIT_SECONDS,
+        default_timeout_seconds: DEFAULT_TIMEOUT_MS / 1000,
+        idle_timeout_seconds: IDLE_TIMEOUT_MS / 1000,
+        kill_grace_seconds: KILL_GRACE_MS / 1000,
+      },
+      jobs: [...jobs.values()].map((j) => ({
+        job_id: j.id, kind: j.kind, status: j.status, cwd: j.cwd, session_id: j.sessionId,
+        started_at: j.startedAt, finished_at: j.finishedAt, ...jobDeadlines(j),
+        command: j.command.slice(0, 200),
+      })),
+    }),
   );
 
   server.registerTool(
     "cancel_job",
     {
       title: "Cancel a job",
-      description: "Gracefully stop a running job with SIGTERM — unlike a timeout, which is a hard SIGKILL with no cleanup.",
+      description: `Gracefully stop a running job with SIGTERM, escalating to a hard SIGKILL only if it is still alive after ${KILL_GRACE_MS / 1000}s, so it cannot hang forever on an unresponsive child.`,
       inputSchema: { job_id: z.string() },
     },
     async ({ job_id }) => {
       const job = jobs.get(job_id);
       if (!job) return text({ error: "unknown job_id" });
       job.kill?.();
-      return text({ job_id, status: job.status });
+      return text({ job_id, status: job.status, terminating: job.terminating, grace_seconds: KILL_GRACE_MS / 1000 });
     },
   );
 

@@ -91,18 +91,26 @@ can silently change installed tool versions if the image changed.
   re-initialise automatically instead of getting permanently stuck — see CHANGELOG 0.21 for the
   full spec citation. A request with no session id at all (other than `initialize`) still
   correctly gets 400 — don't "fix" that path, it's correct per spec.
-- **Transport timeout gotcha:** `run_command` / `get_job` calls through the MCP tool front-end
-  time out at ~60 seconds *at the transport layer*, regardless of the `wait_seconds` argument
-  passed. A timeout does **not** mean the underlying job failed or wasn't started — call
-  `list_jobs` to find the job that's actually running (it will show as `status: running`) and
-  poll `get_job` on that job id instead of re-issuing the original command.
+- **Transport timeout gotcha:** a blocking MCP tool call is abandoned by the *client* after a
+  fixed period, regardless of the `wait_seconds` argument passed. The figure is
+  **client-dependent** — this doc long said ~60s, and a `run_command` with `wait_seconds: 300`
+  was measured returning `timed out after 180s` on 8 Sep 2026 — so never hardcode it. A
+  timeout does **not** mean the underlying job failed or wasn't started; the job runs on
+  perfectly. Call `list_jobs` to find it (`status: running`) and poll `get_job` on that job id
+  instead of re-issuing the original command.
+- Since 0.27 the connector no longer leaves this to chance: every blocking wait is clamped to
+  **`MAX_WAIT_SECONDS`** (default 55s), and a clamped call returns a `wait_clamped` object
+  explaining why, alongside both `job_id` and `session_id` so the run stays recoverable. Set it
+  below whatever your client's ceiling actually is; the default is deliberately conservative
+  because the ceiling has been seen at both ~60s and 180s.
 - **Two different timeouts, and confusing them is expensive.** They are unrelated and have
   opposite consequences:
 
   | | What it is | Effect | Fixable here? |
   |---|---|---|---|
-  | **~60s** | Transport gives up on a blocking call (client/proxy side, above the connector) | Cosmetic. Forces polling — the stop-start rhythm. **The job keeps running.** | No, not ours |
-  | **`DEFAULT_TIMEOUT_MS`** | The connector's own timer | **SIGKILL.** Work destroyed mid-flight, no cleanup | Yes |
+  | **client ceiling** (~60s–180s, client-dependent) | Transport gives up on a blocking call (client/proxy side, above the connector) | Cosmetic. Forces polling — the stop-start rhythm. **The job keeps running.** | Not ours, but bounded by `MAX_WAIT_SECONDS` since 0.27 |
+  | **`DEFAULT_TIMEOUT_MS`** | The connector's own wall-clock timer | Kills the job: SIGTERM, then SIGKILL after `KILL_GRACE_MS`. Work stops mid-flight | Yes |
+  | **`IDLE_TIMEOUT_MS`** | The connector's stalled-job timer (0 = off, and off by default) | Same kill, but only when nothing has happened for that long | Yes |
 
   The chunky stop-start progress people notice is the *first* one and is harmless. If a long
   job silently loses its work, that is the *second* one. A session once concluded the
@@ -121,9 +129,36 @@ can silently change installed tool versions if the image changed.
   see no change, and have no way to tell why. The omitted case must keep falling through to
   the env var. `run_command` is the exception and legitimately defaults to 600s.
 - Since 0.26 a killed job **announces itself**: the result carries a `timeout` object with the
-  effective seconds, `signal: "SIGKILL"`, and a pointer at `timeout_seconds`. Before that it
-  returned a bare `status: "timeout"` with no `finished_at`, which was easy to misread as a
-  hang. If you see that bare shape, the connector is older than 0.26.
+  effective seconds and a pointer at `timeout_seconds`. Before that it returned a bare
+  `status: "timeout"` with no `finished_at`, which was easy to misread as a hang. If you see
+  that bare shape, the connector is older than 0.26.
+- **Since 0.27 the kill is graceful and the object says what really happened.** `timeout` now
+  carries `kind` (`wall_clock` or `idle`), the signal the process actually died from, and
+  `escalated`. The sequence is SIGTERM, then SIGKILL only if the process is still alive after
+  `KILL_GRACE_MS` (default 10s) — so `signal: "SIGTERM", escalated: false` means it shut down
+  cleanly and its transcript was flushed, while `signal: "SIGKILL", escalated: true` means it
+  ignored the graceful signal and no cleanup ran. `cancel_job` uses the same escalation, so it
+  can no longer hang on an unresponsive child. Signals go to the process *group* (jobs are
+  spawned `detached`): killing `bash -lc` alone used to orphan the real work, which kept
+  running and held the pipe open.
+- **Watching a running job (`progress_events`, 0.27).** A `claude -p --output-format json` job
+  prints nothing on stdout until it finishes, so `get_job` used to look identical for a busy
+  job and a hung one. Pass `progress_events: N` to `get_job` (or to
+  `start_session`/`continue_session`) to get the last N events from the session transcript the
+  job is writing. It is a tail read of the last 256KB only — these files reach tens of
+  megabytes — and it is read-only, so watching never disturbs the session. If a job shows no
+  progress *and* no transcript growth, it really is stuck; that is also exactly what
+  `IDLE_TIMEOUT_MS` keys off.
+- **New env vars in 0.27, all with working defaults — none is required, and the unRAID CA
+  template does not carry them yet.** If you want to change any of them, **add them by hand**
+  to the template as plain `-e` variables (they are not secrets, and none of them is a path
+  mapping — do not touch those):
+
+  | Variable | Default | What it does |
+  |---|---|---|
+  | `MAX_WAIT_SECONDS` | `55` | Ceiling on any blocking wait, in **seconds**. Keep it under your client's transport ceiling. |
+  | `IDLE_TIMEOUT_MS` | `0` (disabled) | **Milliseconds.** Kill a job that has made no progress for this long. Deliberately off by default so `DEFAULT_TIMEOUT_MS` keeps its 0.26 meaning. |
+  | `KILL_GRACE_MS` | `10000` | **Milliseconds** between the SIGTERM and the SIGKILL. |
 
 ## 4a. PAL MCP server (code-review advisor)
 
