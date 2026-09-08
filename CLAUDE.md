@@ -60,6 +60,22 @@ committing to a full smoke run.
    logged skip, not an error. The smoke test guards both the absent and present paths. Do not
    bake the binary into the image: keeping it out is what lets that project ship without a
    force-update here.
+9. **The connector's timeout knobs must keep their distinct jobs.** Added in 0.27; the
+   mechanics live in `OPERATIONS.md` §4 and are deliberately not repeated here.
+   - `MAX_WAIT_SECONDS` bounds how long a tool call *blocks*, nothing else. It must stay below
+     the MCP client's transport ceiling, which is client-dependent and not observable from
+     inside this container. Never raise it so a call can "just wait longer", and never hardcode
+     a ceiling figure in the source — the ~60s that was documented for a year was measured at
+     180s on 8 Sep 2026.
+   - `IDLE_TIMEOUT_MS` must keep defaulting to `0`. A non-zero built-in default would fire for
+     callers who never asked for it and would blur what `DEFAULT_TIMEOUT_MS` means — the same
+     shadowing trap that is why `timeout_seconds` has no per-tool default.
+   - Job signals must keep going to the process **group** (`detached: true`), and a job's final
+     status must keep settling in the `close` handler. Signalling `bash -lc` alone orphans the
+     real work and holds the pipe open so `close` never fires; setting the status when the
+     timer fires rather than when the process exits makes the SIGTERM-then-SIGKILL escalation
+     unobservable.
+   `test/smoke.sh` and `test/connector_timeout_check.py` guard all three; do not weaken them.
 
 ## Deploy and verify
 
@@ -132,7 +148,10 @@ is deliberately not run per-iteration; in practice most changes here are validat
 
 - Covered: tool presence and pinned versions (including the four security scanners), the
   connector's `CONNECTOR_TOKEN` gate, SIGTERM stop time, PAL's `mcp==1.29.1` pin, and the
-  `custom_models.json` seed-if-absent behaviour.
+  `custom_models.json` seed-if-absent behaviour. Since 0.27 also the connector's wait
+  clamping, deadline fields, `progress_events` transcript tail, idle-timeout kill-vs-spare
+  behaviour and SIGTERM-to-SIGKILL escalation — all driven behaviourally against a real MCP
+  endpoint in a throwaway container, not asserted against the source.
 - Not covered at all: the entrypoint's Remote Control auto-launch path, `gh auth setup-git`,
   and anything that only manifests after a real force-update against the live host.
 
