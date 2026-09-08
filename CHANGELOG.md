@@ -6,6 +6,95 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.27 (2026-09-08)
+
+- Fix the connector's wait/timeout behaviour and give MCP-started sessions a live view
+  (closes #11). Five changes in `connector/src/index.ts`, one release:
+
+  1. **Blocking waits are clamped to `MAX_WAIT_SECONDS`** (new env var, default 55s). The
+     symptom users reported as "sessions keep timing out" was never a kill: the MCP *client*
+     abandons a single tool call after a fixed, client-dependent period — `OPERATIONS.md`
+     documented ~60s, and 180s was measured live here — while the job underneath runs on
+     perfectly. `wait_seconds` defaulted to 120 and advertised `.max(600)`, so the connector
+     routinely asked the client to wait far longer than it ever would. The schema still
+     *accepts* up to 600 (an existing caller passing 300 is not hard-rejected); the clamp
+     happens at runtime and is reported back in a `wait_clamped` object so the caller learns
+     why. Applies to `start_session`, `continue_session`, `run_command` and `get_job`. A
+     clamped call still returns both `job_id` and `session_id`, so a long run is always
+     recoverable.
+  2. **Deadlines are visible.** `elapsed_seconds`, `timeout_seconds` and `deadline_at` on the
+     job summary and in `list_jobs`; `list_jobs` also reports the connector-level settings
+     (`max_wait_seconds`, `default_timeout_seconds`, `idle_timeout_seconds`,
+     `kill_grace_seconds`), since it is the recovery path after a cut-off call. While
+     diagnosing this, `get_job` gave no way to see a running job's own timeout, which produced
+     a confidently wrong prediction that a job would die at 30 minutes when it had been started
+     with a larger explicit `timeout_seconds`.
+  3. **Live progress via `progress_events`** on `get_job` (and on `start_session` /
+     `continue_session`). A running `claude -p --output-format json` prints nothing at all
+     until it finishes, so a poller could not tell progress from a hang. The session transcript
+     at `~/.claude/projects/<encoded cwd>/<session_id>.jsonl` *is* appended to continuously, so
+     the connector tails it — the last 256KB only, never the whole file, discarding the leading
+     partial line; the live one in this container is 33MB. It prefers the file named by the
+     job's session id and falls back to the newest `.jsonl` in the project directory that has
+     been touched since the job started, because a resumed session can be recorded under a
+     forked id. The named file is only trusted while it is actually being appended to since
+     the job started: on a resume it always exists, so trusting its mere existence would pin
+     progress (and the idle timer's liveness check) to a file a forked session has stopped
+     writing to — making a live job look dead.
+
+     **Issue #11's proposed approach (attach ttyd/tmux to the job) is rejected and not
+     implemented.** It cannot work as written: `runProcess()` spawns jobs with `shell: false`
+     and closes stdin immediately, and `CLAUDE_BIN` resolves to `/usr/local/bin/claude`, not
+     the `claude-wrapper.sh` shell function. Jobs are plain children of the connector — not in
+     a tmux pane, not on a PTY, with nothing to type into. The ttyd terminal serves the
+     separate `claude` tmux session `entrypoint.sh` creates, which has no relationship to any
+     job. Delivering it literally would mean re-architecting job spawning onto PTYs and
+     reworking `parseClaudeJson()`. The transcript tail meets the issue's acceptance criteria
+     (watch a job by id, no new unauthenticated surface, read-only so it cannot disturb the
+     session) at a fraction of the risk.
+  4. **An idle timeout beside the wall-clock one** — `idle_timeout_seconds` per call,
+     `IDLE_TIMEOUT_MS` for the omitted case — so a job that has *stopped making progress* is
+     killed rather than one that is merely long. This is what would have saved job `c6f1a513`,
+     a legitimate overnight autonomous run killed by the wall clock. Activity means stdout or
+     stderr growth, or the session transcript's mtime advancing (the only usable liveness
+     signal for a `claude -p` job). `IDLE_TIMEOUT_MS` defaults to **0 = disabled** and the
+     wall-clock timeout keeps its 0.26 semantics exactly, so `DEFAULT_TIMEOUT_MS` is not
+     shadowed — the same trap `OPERATIONS.md` documents for `timeout_seconds`.
+  5. **Kills are graceful: SIGTERM, then SIGKILL only after `KILL_GRACE_MS`** (new env var,
+     default 10s), for timeouts and for `cancel_job` alike, so a killed session gets a chance
+     to flush its transcript instead of leaving a dirty tree, and `cancel_job` cannot hang on
+     an unresponsive child. Two consequences worth knowing:
+     - Jobs are now spawned `detached`, and signals go to the process *group*. Without that,
+       killing `bash -lc` orphaned the real work, which kept running and held the stdout pipe
+       open so the `close` event never fired.
+     - Status now settles in the `close` handler rather than the instant the timer fires, so
+       `finished_at`, `exit_code` and the reported signal describe what actually happened.
+       Previously `status: "timeout"` was set before the process had exited.
+
+     This deliberately changes the `timeout` object 0.26 added rather than fudging it: it now
+     carries `kind` (`wall_clock` or `idle`), the signal that really ended the process, and
+     `escalated`. `test/connector_timeout_check.py` was updated to the new contract, not
+     weakened — it keeps the assertions that the message points at `timeout_seconds` and that
+     `cancel_job` still advertises a graceful SIGTERM.
+
+  Tests (behavioural, driving the real MCP endpoint of throwaway containers, not grepping
+  source). `test/smoke.sh` now runs two connector containers, because `IDLE_TIMEOUT_MS` in the
+  first would fire before the wall clock and mask it. The fake `claude` stand-in grew modes:
+  it now writes a real session transcript, can ignore SIGTERM (proving the SIGKILL escalation
+  actually happens after the grace period — the old bash `sleep` stub died on SIGTERM
+  immediately, so escalation was never exercised), can stay transcript-active while silent on
+  stdout, and can leave a 600MB sparse transcript that a whole-file read could not even hold in
+  a JS string, which is what makes "reads only the tail" a real assertion rather than a vacuous
+  one. Red baseline before the fix: `kind=None` on the wall-clock kill, and a stalled job still
+  `running` with the idle timer set.
+
+  Review (six independent passes, score 10 = CALL band; counsel was unavailable — PAL is
+  permission-gated and this was an unattended run — so the MID-band procedure of three
+  further passes was used instead) found one defect, fixed with its own test: the idle timer
+  consulted the transcript fallback for `run_command` shell jobs too, so a concurrent Claude
+  session writing in the same project could keep a genuinely stalled shell job alive forever.
+  A shell job is now judged on its own output alone, as `run_command` advertises.
+
 ## 0.26 (2026-09-06)
 
 - Fix the connector silently SIGKILLing long-running `start_session`/`continue_session` jobs

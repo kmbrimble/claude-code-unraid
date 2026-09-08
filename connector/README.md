@@ -21,6 +21,14 @@ port 8765 **only when `CONNECTOR_TOKEN` is set** (unRAID template variable). Log
 | `read_file` | Read a file under `/projects` |
 | `get_job` / `list_jobs` / `cancel_job` | Long calls return a `job_id` after `wait_seconds`; poll here |
 
+`wait_seconds` is clamped to `MAX_WAIT_SECONDS` (default 55s) because the MCP client
+abandons a blocking call before then; a clamped call says so in `wait_clamped` and still
+returns `job_id` and `session_id`. `get_job` accepts `progress_events: N` to tail the live
+session transcript of a running Claude job, which is otherwise silent until it finishes.
+Jobs are killed with SIGTERM then SIGKILL after `KILL_GRACE_MS` (default 10s), on the
+wall clock (`timeout_seconds` / `DEFAULT_TIMEOUT_MS`) or, if enabled, on no progress
+(`idle_timeout_seconds` / `IDLE_TIMEOUT_MS`, default 0 = off). See OPERATIONS.md §4.
+
 ## Connect
 
 - Cowork / desktop: Settings → Connectors → Add custom connector →
