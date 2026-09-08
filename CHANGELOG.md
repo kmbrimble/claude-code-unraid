@@ -6,6 +6,17 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Container restart policy changed from `no` to `unless-stopped`, applied live with
+  `docker update` and persisted in the CA template's `ExtraParams` (unRAID exposes no
+  restart-policy field, so it goes in Extra Parameters). The recovery watchdog stays: this
+  covers the container exiting, not a recreate that fails before a container exists, which is
+  the failure mode the watchdog exists for. `OPERATIONS.md` §6 and CLAUDE.md's deploy step
+  both said the policy was `no` and have been corrected.
+- `templates/claude-code.xml`: `ExtraParams` brought back in step with the live template
+  (`--restart=unless-stopped` plus the pre-existing `--add-host` that had drifted in
+  uncommitted). Only `ExtraParams` was reconciled — other known drift in this file is left
+  alone rather than swept in silently.
+
 ## 0.27 (2026-09-08)
 
 - Fix the connector's wait/timeout behaviour and give MCP-started sessions a live view

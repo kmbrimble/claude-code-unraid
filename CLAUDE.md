@@ -95,9 +95,10 @@ committing to a full smoke run.
 5. The force-update itself must run **from the host**, never from inside the container being
    updated — an in-container SSH-to-self commits suicide mid-script. The procedure and its
    traps are in `OPERATIONS.md` §6. `/projects/.ops/force-update-with-watchdog.sh` wraps it
-   and arms a recovery watchdog first, because the container's restart policy is `no`: a
-   failed recreate leaves it stopped, and once it is stopped nothing in the cloud can reach
-   the host to restart it.
+   and arms a recovery watchdog first. The restart policy is `unless-stopped` as of 8 Sep
+   2026, which covers the container *exiting* but not a recreate that fails before a container
+   exists — and once it is down nothing in the cloud can reach the host to restart it, because
+   the connector runs inside it. Keep the watchdog; see `OPERATIONS.md` §6.
 
 ## Code review
 

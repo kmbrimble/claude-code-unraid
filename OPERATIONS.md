@@ -246,9 +246,16 @@ session may itself be running through.
   Cowork chat connected to it needs to reconnect and, pre-v0.21, would get stuck forever if it
   reused an old session id (fixed in 0.21, see §4).
 
-Restart policy on the container is `no`, so a recreate that fails leaves the container
-**stopped**, not restarted — check `docker ps -a` after a force-update, don't assume it came
-back up.
+Restart policy is **`unless-stopped`** as of 8 Sep 2026 — applied to the live container with
+`docker update --restart unless-stopped claude-code`, and persisted in the CA template's
+`ExtraParams` so a future recreate keeps it (unRAID has no restart-policy field of its own;
+it goes in Extra Parameters).
+
+**That does not retire the watchdog, and the distinction matters.** `unless-stopped` restarts a
+container that *exits* — a crash, an OOM kill, a Docker daemon or host restart. It does nothing
+about a recreate that fails before a container exists, or one created but never started, which
+is exactly the force-update failure mode the watchdog is for. Still check `docker ps -a` after a
+force-update rather than assuming it came back up.
 
 A container **recreate** (e.g. editing the CA template and hitting Apply) uses the already
 pulled/cached image and does **not** pull a new one — only a genuine force-update

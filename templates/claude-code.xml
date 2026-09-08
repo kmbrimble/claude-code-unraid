@@ -16,7 +16,7 @@
   <WebUI>http://[IP]:[PORT:7681]/</WebUI>
   <TemplateURL/>
   <Icon/>
-  <ExtraParams/>
+  <ExtraParams>--restart=unless-stopped --add-host=claude.kiztigs.com:192.168.0.23</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled>1786395332</DateInstalled>
