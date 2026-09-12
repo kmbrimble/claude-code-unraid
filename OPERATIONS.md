@@ -187,6 +187,23 @@ can silently change installed tool versions if the image changed.
   `claude mcp remove -s user pal` and let the next start re-register to pick up a change.
 - PAL is an advisor only — it has no repository write access, and nothing in this wiring grants
   it one.
+- **MCP servers, PAL included, ARE available in headless `claude -p` sessions — and the
+  `permissions.allow` list in `~/.claude/settings.json` IS honoured there.** Several sessions
+  have claimed the opposite and reached for the OpenRouter API directly as a workaround. That
+  advice is wrong; don't repeat it. The six `mcp__pal__*` tools are listed under
+  `permissions.allow`, so they run without prompting in `-p` runs.
+
+  Verified 2026-09-12 with two `claude -p` arms under identical
+  `--permission-mode manual --permission-prompts none` (which denies anything not
+  pre-approved): `mcp__pal__version` succeeded and returned real output, while a `Write` to
+  `/tmp` was denied and the file never appeared. The contrast is the proof — permissions were
+  genuinely enforced, so only the allow-list entry could have permitted the PAL call.
+- **Don't test permissions through the connector.** `entrypoint.sh` sets `SKIP_PERMISSIONS=1`,
+  and `connector/src/index.ts` turns that into `--dangerously-skip-permissions` on every
+  `start_session`/`continue_session` (unless `permission_mode` is passed explicitly). A
+  connector-driven session therefore never prompts regardless of the allow list, so it can
+  confirm MCP *availability* but tells you nothing about *permissions*. Use a direct
+  `claude -p` invocation for that.
 
 ## 5. The `/feature` workflow
 
