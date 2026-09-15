@@ -313,6 +313,34 @@ image take effect."
   process, `docker ps -a` for containers it should have created, and re-poll rather than taking
   the first result at face value.
 
+- **Headless default-mode sessions have a working-directory path guard on Bash — and it
+  is not a sign that a script is unreachable.** With `permission_mode: default` (as every
+  Cowork-driven `/feature` run passes), the Bash tool refuses `ls`/`cat`/`mkdir`, input
+  *and* output redirection on paths outside the session's allowed directories, and treats a
+  `cp` **from** anything under `~/.claude` as an edit of a sensitive file (a hang/deny in
+  `-p`). It does **not** guard script execution (`bash <script>`, `python3 <script>`) or the
+  `Read` tool. Three `/feature` runs on unraid-dormouse (13–15 Sep 2026) probed with
+  `ls ~/.claude/review-lib`, got blocked, and skipped the whole `code-diff-reviewer`
+  pipeline. Fixed 15 Sep 2026 without an image change:
+  - `~/.claude/settings.json` → `permissions.additionalDirectories:
+    ["/root/.claude/review-lib", "/tmp/claude-review"]`. This makes `ls`/`cat`/`mkdir` work
+    there, but **not** the `cp`-from-`~/.claude` block and **not** output redirection, and a
+    listed directory that does not exist when the session starts is silently dropped —
+    `/tmp/claude-review` is gone after every container restart until the first review run
+    recreates it. `--add-dir` on the connector's `claude -p` line was tested and behaves
+    identically, so it was not added (it would have needed a force-update for no gain).
+  - `~/.claude/review-lib/run-passes.sh` now takes `--template diff|module|security
+    --brief TEXT` and makes its own run directory under `/tmp/claude-review` (first output
+    line `out=<dir>`); omit `--template` with an existing `--out` to reuse its `prompt.md`.
+    New `run-scanners.sh` does the same for `code-security-audit`'s scanners. The three
+    review skills and `/feature` step 18 no longer contain any blocked shape, and say "run,
+    don't probe". Pre-change copies: `~/.claude/backups/review-path-guard-20260915/`.
+  - Verified with a connector `start_session` in `default` mode on unraid-dormouse: three
+    passes, union and score all ran, `started_in_background=0` on each.
+  - Related trap found on the way: skill bodies substitute `$0`, `$1`… with the invocation
+    arguments, so `US$0.15` rendered as `US/projects/unraid-dormouse.15`. Write currency as
+    `0.15 USD` in skills and commands.
+
 ## 8. Open items
 
 a. `claude-auto-retry`'s retry logic has never been proven end-to-end against a real rate
