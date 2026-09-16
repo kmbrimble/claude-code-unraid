@@ -1,0 +1,19 @@
+# Fixture exercising every HA custom YAML tag ha-yaml-check must tolerate
+# without resolving. A real Home Assistant config never resolves !secret,
+# !include etc. outside HA itself, so a linter must accept them as opaque.
+homeassistant:
+  name: !secret home_name
+  packages: !include_dir_merge_named packages/
+
+automation: !include_dir_list automations/
+
+sensor: !include_dir_named sensors/
+
+group: !include_dir_merge_list groups/
+
+api_key: !secret api_key
+dashboard: !include dashboards/main.yaml
+debug_mode: !env_var DEBUG_MODE "false"
+
+input_boolean:
+  guest_mode: !input guest_mode_default

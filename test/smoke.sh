@@ -659,6 +659,85 @@ check "semgrep venv bin is not on PATH" docker exec "$NAME" bash -lc \
 check "python3 is still the system python, not semgrep venv" docker exec "$NAME" bash -lc \
   '[ "$(readlink -f "$(command -v python3)")" != "/opt/semgrep/venv/bin/python3" ]'
 
+# uv + a uv-managed Python >= 3.14.2 (issue #18), alongside Debian's 3.11.
+# HA 2026.9.1 requires Python >= 3.14.2 and pytest-homeassistant-custom-component
+# 0.13.365 requires >= 3.14, so the system's 3.11.2 cannot run either. uv installs
+# the managed interpreter at UV_PYTHON_INSTALL_DIR=/opt/uv-python (baked, NOT
+# /root, which is shadowed by the persisted home bind mount at runtime — same
+# trap as the Android cmdline-tools and PAL) and links a `python3.14` executable
+# into UV_PYTHON_BIN_DIR=/usr/local/bin. `uv python install` without `--default`
+# does not touch unversioned `python`/`python3`, so Debian's system python3 is
+# never shadowed.
+UV_VERSION="0.12.15"
+PY314_VERSION="3.14.7"
+HA_PYTEST_VERSION="0.13.365"
+
+check "uv present at pinned version" docker exec "$NAME" bash -c \
+  "uv --version | grep -q 'uv $UV_VERSION'"
+check "python3.14 present at pinned version >= 3.14.2 (also proves it survives the empty-/root bind mount this container already runs with)" \
+  docker exec "$NAME" bash -c "python3.14 --version | grep -q 'Python $PY314_VERSION'"
+check "system python3 is still Debian's 3.11 at /usr/bin/python3, not shadowed by uv" docker exec "$NAME" bash -c \
+  '[ "$(command -v python3)" = "/usr/bin/python3" ] && python3 --version | grep -qE "Python 3\.11\."'
+
+# Slow and network-dependent (installs a real package from PyPI and boots a
+# real, minimal Home Assistant core) — accepted per issue #18, kept as one
+# clearly-labelled stage rather than spread across several.
+docker cp "$REPO_ROOT/test/fixtures/ha_smoke_test.py" "$NAME:/tmp/ha_smoke_test.py" >/dev/null 2>&1
+check "uv venv --python 3.14 installs pytest-homeassistant-custom-component and passes a real HA test using the hass fixture" \
+  docker exec "$NAME" bash -c "
+    set -e
+    mkdir -p /tmp/ha-uv-test && cd /tmp/ha-uv-test
+    uv venv --python 3.14 .venv
+    . .venv/bin/activate
+    uv pip install 'pytest-homeassistant-custom-component==$HA_PYTEST_VERSION'
+    cp /tmp/ha_smoke_test.py test_ha_smoke.py
+    python -m pytest -q test_ha_smoke.py
+  "
+
+# pip / PyYAML for HA YAML linting (issue #18). Debian packages, not a pip
+# install into system Python — bookworm's system Python is PEP 668
+# externally-managed. python3-pip/python3-venv are added so pip3 exists and
+# works inside venvs; Pillow/ImageMagick were judged not worth the image
+# weight for a "minor" ask with no acceptance criterion, so python3-pil is
+# deliberately not installed.
+check "python3 -c 'import yaml' works (Debian python3-yaml package)" \
+  docker exec "$NAME" python3 -c 'import yaml'
+check "yamllint present" docker exec "$NAME" bash -c 'yamllint --version'
+check "pip3 present" docker exec "$NAME" bash -c 'pip3 --version'
+
+# ha-yaml-check: a PyYAML SafeLoader subclass baked into the image at
+# /usr/local/bin/ha-yaml-check that accepts HA's custom tags (!secret,
+# !include, !include_dir_list, !include_dir_named, !include_dir_merge_list,
+# !include_dir_merge_named, !env_var, !input) as opaque instead of trying to
+# resolve them, and reports a genuine syntax error as file:line.
+docker cp "$REPO_ROOT/test/fixtures/ha-yaml-valid.yaml" "$NAME:/tmp/ha-yaml-valid.yaml" >/dev/null 2>&1
+docker cp "$REPO_ROOT/test/fixtures/ha-yaml-invalid.yaml" "$NAME:/tmp/ha-yaml-invalid.yaml" >/dev/null 2>&1
+check "ha-yaml-check passes on a fixture using every HA custom tag" \
+  docker exec "$NAME" ha-yaml-check /tmp/ha-yaml-valid.yaml
+check "ha-yaml-check fails non-zero with file:line on a genuine YAML error" docker exec "$NAME" bash -c '
+  ha-yaml-check /tmp/ha-yaml-invalid.yaml >/tmp/ha-yaml-err.log 2>&1
+  CODE=$?
+  [ "$CODE" -ne 0 ] && grep -q "ha-yaml-invalid.yaml:10" /tmp/ha-yaml-err.log
+'
+
+# Connector read_file returns MCP image content blocks for PNG/JPEG (issue
+# #18), behavioural against the already-running connector's real MCP
+# endpoint, the same way the 0.27 timeout checks work (see
+# connector_image_check.py). Text files must behave exactly as before, an
+# over-cap image must get a clear error rather than a truncated/corrupt
+# image, and safeProjectPath must still confine reads to PROJECTS_ROOT.
+docker exec "$NAME" mkdir -p /projects/img-test
+docker cp "$REPO_ROOT/test/fixtures/sample.png" "$NAME:/projects/img-test/sample.png" >/dev/null 2>&1
+docker cp "$REPO_ROOT/test/fixtures/sample.jpg" "$NAME:/projects/img-test/sample.jpg" >/dev/null 2>&1
+docker exec "$NAME" bash -c 'printf "hello from read_file smoke test\n" > /projects/img-test/sample.txt'
+docker exec "$NAME" bash -c '
+  printf "\x89PNG\r\n\x1a\n" > /projects/img-test/oversized.png
+  head -c 6000000 /dev/zero >> /projects/img-test/oversized.png
+'
+docker cp "$REPO_ROOT/test/connector_image_check.py" "$NAME:/tmp/connector_image_check.py" >/dev/null 2>&1
+check "connector read_file: byte-identical image blocks for PNG/JPEG, unchanged text, oversized image rejected, path outside PROJECTS_ROOT still refused" \
+  docker exec "$NAME" python3 /tmp/connector_image_check.py "$CONNECTOR_TOKEN" img-test
+
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
 if docker stop "$NAME" >/dev/null 2>&1; then

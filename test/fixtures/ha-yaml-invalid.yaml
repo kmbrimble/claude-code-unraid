@@ -1,0 +1,10 @@
+# Fixture with a genuine YAML syntax error (bad indentation under a mapping
+# key) for ha-yaml-check to catch and report by file:line.
+homeassistant:
+  name: !secret home_name
+sensor:
+  - platform: template
+    sensors:
+      broken_entry:
+    friendly_name: "Broken"
+        value_template: "{{ 1 + 1 }}"

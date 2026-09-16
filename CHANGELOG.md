@@ -6,6 +6,52 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Plan for issue #18** (Python 3.14 via uv, pip/PyYAML for HA YAML linting, and image
+  support in the connector's `read_file`) — implementation in progress, this run's Phase 1
+  covers plan + RED baseline only:
+  1. **uv + a uv-managed Python 3.14, alongside Debian's 3.11.** HA 2026.9.1 requires Python
+     >= 3.14.2; `pytest-homeassistant-custom-component` 0.13.365 requires >= 3.14; the image
+     only has 3.11.2. Bake `uv` 0.12.15 (GitHub release tarball, SHA256-verified, same pattern
+     as osv-scanner/trufflehog/hadolint) into `/usr/local/bin`, then `uv python install
+     3.14.7` (newest 3.14 patch uv currently offers, verified against python-build-standalone
+     release `20260901`) with `UV_PYTHON_INSTALL_DIR=/opt/uv-python` (baked, not `/root` —
+     shadowed by the persisted home mount at runtime, same trap as the Android cmdline-tools)
+     and `UV_PYTHON_BIN_DIR=/usr/local/bin`. Without `--default`, `uv python install` links
+     only a versioned `python3.14` executable — it does not touch unversioned `python`/
+     `python3`, so Debian's system Python is never shadowed. `UV_PYTHON_DOWNLOADS=manual` so
+     a per-project `uv venv --python 3.14` resolves to the interpreter already baked in rather
+     than silently fetching a different patch over the network at runtime. `UV_CACHE_DIR` is
+     left unset: it already defaults under `$HOME/.cache/uv`, i.e. the persisted home mount,
+     with no extra `ENV` needed.
+  2. **pip / PyYAML for HA YAML linting.** Debian packages (`python3-yaml`, `yamllint`,
+     `python3-pip`, `python3-venv`) rather than a pip install into system Python — bookworm's
+     system Python is PEP 668 externally-managed. `python3-pil` deliberately left out: the
+     issue calls Pillow/ImageMagick minor with no acceptance criterion, so it doesn't earn its
+     image weight this round. A small HA-aware YAML checker (`scripts/ha-yaml-check.py` ->
+     `/usr/local/bin/ha-yaml-check`) will ship as a PyYAML `SafeLoader` subclass that accepts
+     `!secret`, `!include`, `!include_dir_list`, `!include_dir_named`,
+     `!include_dir_merge_list`, `!include_dir_merge_named`, `!env_var` and `!input` as opaque
+     rather than resolving them, and reports a genuine syntax error as `file:line`.
+  3. **Connector `read_file` returns MCP image content blocks.** `connector/src/index.ts`
+     (~line 644): detect PNG/JPEG (required; WebP/GIF added too, same few lines) by magic
+     bytes, extension only as a secondary hint, and return `{ type: "image", data: <base64 of
+     the whole file>, mimeType }` instead of UTF-8 text. Text files are unaffected. A new
+     env-overridable `MAX_IMAGE_BYTES` (default 5,000,000 — "a few MB" per the issue) caps
+     image reads with a clear error above it; the existing `max_bytes` text truncation must
+     never apply to an image. `safeProjectPath` is unchanged.
+  - New smoke assertions (see `test/smoke.sh`, `test/fixtures/`, `test/connector_image_check.py`):
+    pinned `uv`/`python3.14` versions, `python3` still Debian's 3.11 at `/usr/bin/python3`
+    (also proving `python3.14` survives the empty-`/root` bind mount this test already runs
+    with), a real `uv venv --python 3.14` install of `pytest-homeassistant-custom-component`
+    passing a test that uses the real `hass` fixture, `import yaml`/`yamllint`/`pip3` present,
+    `ha-yaml-check` passing on a fixture exercising every HA tag and failing with `file:line`
+    on a genuine error, and a behavioural MCP check (mirroring `connector_timeout_check.py`)
+    that `read_file` returns byte-identical image blocks for PNG/JPEG, leaves text files
+    unchanged, rejects an over-cap image with a clear error, and still refuses a path outside
+    `PROJECTS_ROOT`.
+  - Image size delta and the folded-in restart-policy/template entries below will be recorded
+    here as **0.28** once implementation and the full green re-run are done.
+
 - Container restart policy changed from `no` to `unless-stopped`, applied live with
   `docker update` and persisted in the CA template's `ExtraParams` (unRAID exposes no
   restart-policy field, so it goes in Extra Parameters). The recovery watchdog stays: this
