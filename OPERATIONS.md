@@ -85,6 +85,9 @@ can silently change installed tool versions if the image changed.
   container recreation.
 - `~/projects` (i.e. `/root/projects`) is **not** the same thing and is **not** persisted —
   don't create work there expecting it to survive a restart.
+- `/projects/.worktrees/` holds per-session git worktrees (see §5a). Dotted deliberately, so
+  the `*/` glob used by the Remote Control launcher and by project listings skips it —
+  worktrees are not projects and must not appear as such.
 
 ## 4. The MCP connector (`connector/`)
 
@@ -320,6 +323,48 @@ uncommitted work already in the tree — starting a duplicate run on the same re
 agents editing the same files/branch concurrently. If `git status` shows uncommitted changes
 that look like an in-progress feature (matching a CHANGELOG `[Unreleased]` entry, say), check
 `list_jobs` for a running `claude`-kind job on this project before starting a new one.
+
+## 5a. Concurrent sessions and git worktrees
+
+Several sessions can be live in the same repo at once — a Cowork chat driving the connector, a
+scheduled run, and whatever is open interactively. They share one checkout at
+`/projects/<name>`, so without isolation one lands on another's branch or commits into another's
+dirty working tree.
+
+**Any session that WRITES to a shared repo takes its own worktree.** Read-only investigation
+does not need one.
+
+```
+git -C /projects/<project> worktree prune
+git -C /projects/<project> fetch origin
+git -C /projects/<project> worktree add -b <branch> \
+    /projects/.worktrees/<project>-<slug> origin/main
+cd /projects/.worktrees/<project>-<slug>
+```
+
+- **Branch from `origin/main`, not local `main`.** Two reasons: the local ref goes stale (the
+  push-based merge below never updates it), and `main` may be checked out in the shared
+  checkout, which makes it unavailable to a worktree.
+- **Merge by pushing, never by checking out `main`.** `git push origin HEAD:main` is
+  fast-forward only, so it **fails if `main` moved** since the worktree was cut — that failure
+  is the collision detector, not an obstacle. Rebase onto the new `origin/main`, re-run the
+  suite, push again. Never force.
+- **`git worktree add` refusing a branch already checked out elsewhere is the protection
+  working.** Pick a different slug; never `--force` past it.
+- **Prune on the way IN, not just on the way out.** The connector SIGKILLs a job at its timeout
+  (see §4), and SIGKILL runs no cleanup — so a killed session leaves its worktree behind by
+  design, not by accident.
+
+**What a worktree does NOT isolate: the deploy target.** `ha-config`'s deploy step copies files
+onto a running Home Assistant via the SMB mount at `/ha-config` — a separate filesystem, outside
+git entirely. Two sessions in two clean worktrees can still both write there. Worktrees solve
+branch collisions; concurrent deploys to a live system need their own lock or a one-at-a-time
+rule, and that is still an open question for `ha-config`.
+
+Why this is written down: six worktrees from the September 2026 counsel evaluation
+(`_replay-butler` and friends) sat in `/projects/` for twelve days — 61 MB, and counted as
+projects by the `*/` glob — before being cleaned up on 16 Sep. That is the failure mode this
+convention exists to prevent, hence the dotted directory and prune-on-entry.
 
 ## 6. Force-updating the container
 
