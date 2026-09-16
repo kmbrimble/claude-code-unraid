@@ -1,0 +1,5 @@
+# Fixture with a misspelt HA tag (!secrets instead of !secret). A prefix-
+# based "!" multi-constructor would silently accept this as opaque; the real
+# checker must reject it as an unresolvable tag, at its line.
+homeassistant:
+  name: !secrets home_name

@@ -712,12 +712,21 @@ check "pip3 present" docker exec "$NAME" bash -c 'pip3 --version'
 # resolve them, and reports a genuine syntax error as file:line.
 docker cp "$REPO_ROOT/test/fixtures/ha-yaml-valid.yaml" "$NAME:/tmp/ha-yaml-valid.yaml" >/dev/null 2>&1
 docker cp "$REPO_ROOT/test/fixtures/ha-yaml-invalid.yaml" "$NAME:/tmp/ha-yaml-invalid.yaml" >/dev/null 2>&1
+docker cp "$REPO_ROOT/test/fixtures/ha-yaml-unknown-tag.yaml" "$NAME:/tmp/ha-yaml-unknown-tag.yaml" >/dev/null 2>&1
 check "ha-yaml-check passes on a fixture using every HA custom tag" \
   docker exec "$NAME" ha-yaml-check /tmp/ha-yaml-valid.yaml
 check "ha-yaml-check fails non-zero with file:line on a genuine YAML error" docker exec "$NAME" bash -c '
   ha-yaml-check /tmp/ha-yaml-invalid.yaml >/tmp/ha-yaml-err.log 2>&1
   CODE=$?
   [ "$CODE" -ne 0 ] && grep -q "ha-yaml-invalid.yaml:10" /tmp/ha-yaml-err.log
+'
+# A prefix-based "!" multi-constructor would silently accept a misspelt tag
+# (e.g. !secrets) as opaque instead of reporting it, and HA would then fail
+# to resolve it for real at load time — exact-tag registration must catch it.
+check "ha-yaml-check fails non-zero with file:line on an unregistered/misspelt tag" docker exec "$NAME" bash -c '
+  ha-yaml-check /tmp/ha-yaml-unknown-tag.yaml >/tmp/ha-yaml-unknown-err.log 2>&1
+  CODE=$?
+  [ "$CODE" -ne 0 ] && grep -q "ha-yaml-unknown-tag.yaml:5" /tmp/ha-yaml-unknown-err.log
 '
 
 # Connector read_file returns MCP image content blocks for PNG/JPEG (issue

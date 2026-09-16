@@ -62,6 +62,18 @@ see §6 on why versions drift silently on force-update):
   had a live `claude remote-control` process | see §7, "10 vs 11" |
 | `~/claude-remote-logs` | ~200MB total, one log per project, capped by a background loop | `du -sh`, and `cap_remote_control_logs_loop` confirmed both running (`ps aux`) and present in
   `entrypoint.sh` |
+| `uv` | `0.12.15`, GitHub release tarball, SHA256-verified on download | `uv --version` |
+| uv-managed Python | `3.14.7` at `/usr/local/bin/python3.14` (managed install under
+  `/opt/uv-python`); system `python3` at `/usr/bin/python3` stays Debian's `3.11.2`, untouched |
+  `python3.14 --version`, `python3 --version` |
+| `yamllint` | `1.29.0` (Debian `bookworm` package, not pinned by this repo — tracks whatever
+  `apt` resolves) | `yamllint --version` |
+| `ha-yaml-check` | `/usr/local/bin/ha-yaml-check`, from `scripts/ha-yaml-check.py` | `ha-yaml-check FILE` |
+| Connector image support | `read_file` returns an MCP image block for PNG/JPEG/GIF/WebP
+  (magic-byte detection), capped at `MAX_IMAGE_BYTES` (default 5,000,000 bytes decoded, ~6.7MB
+  once base64-encoded — comfortably under the 10MB base64-per-image limit the Claude API and
+  claude.ai document); text files unchanged | `test/connector_image_check.py`, driven behaviourally
+  against a real MCP endpoint the same way `test/connector_timeout_check.py` does |
 
 Re-run these checks after any force-update rather than assuming they still hold — a recreate
 can silently change installed tool versions if the image changed.
@@ -204,6 +216,75 @@ can silently change installed tool versions if the image changed.
   connector-driven session therefore never prompts regardless of the allow list, so it can
   confirm MCP *availability* but tells you nothing about *permissions*. Use a direct
   `claude -p` invocation for that.
+
+## 4b. uv-managed Python 3.14, and HA YAML linting (issue #18)
+
+- **Why it exists.** The live HA is `2026.9.1`; its `pyproject.toml` requires
+  `python_requires >= 3.14.2`, and `pytest-homeassistant-custom-component` 0.13.365 requires
+  `>= 3.14`. The image's system Python (Debian bookworm's `3.11.2` at `/usr/bin/python3`) can
+  run neither, so ha-config and nectr-energy tests were stubbing every `homeassistant` import
+  instead of running against real HA. `uv` + a managed Python 3.14 close that gap without
+  touching system Python.
+- **Where it lives, and why.** `uv` itself is at `/usr/local/bin` (a pinned, SHA256-verified
+  GitHub release tarball, same pattern as osv-scanner/trufflehog/hadolint). The managed
+  interpreter is baked at `UV_PYTHON_INSTALL_DIR=/opt/uv-python` — **not** `/root`, which is
+  bind-mounted from the persisted appdata home at runtime and would shadow anything the image
+  put there (the same trap as the Android cmdline-tools and PAL). `UV_PYTHON_BIN_DIR=/usr/local/bin`
+  is where `uv python install 3.14.7` links the versioned `python3.14` executable; without
+  `--default`, this never touches or shadows the unversioned `python`/`pip` that Debian's
+  system Python owns.
+- **`UV_PYTHON_DOWNLOADS=manual`.** This is a deliberate runtime restriction, not just a build-time
+  one: if a session runs `uv python install <some other version>` at runtime, it lands under
+  `/opt/uv-python` same as the baked 3.14.7 — but `/opt` is **not** on the persisted mounts (see
+  §1), so that extra interpreter is silently lost on the next image rebuild/recreate, while
+  anything that depended on it keeps working until then. `manual` doesn't prevent the runtime
+  install itself (explicit `uv python install` is still allowed); it prevents an *implicit*
+  download when some other command (e.g. `uv venv --python 3.12`) can't find a matching
+  interpreter — that would otherwise silently fetch one over the network rather than erroring,
+  which is worse for a container whose Python footprint is supposed to be exactly what's baked in.
+- **Per-project venv recipe:**
+  ```
+  uv venv --python 3.14 .venv
+  . .venv/bin/activate
+  uv pip install pytest-homeassistant-custom-component==0.13.365
+  ```
+  This resolves to the baked 3.14.7 (not a fresh download, per the `manual` setting above).
+- **Trap: pytest-asyncio's default `strict` mode doesn't pick up `pytest-homeassistant-custom-component`'s
+  autouse async fixtures** (e.g. `configure_event_loop`). A test using the `hass` fixture fails
+  at setup with `PytestRemovedIn9Warning: ... requested an async fixture ... with no plugin or
+  hook that handled it`, even with `@pytest.mark.asyncio` on the test itself — the mark doesn't
+  extend to the plugin's own fixtures. Fix: run with `--asyncio-mode=auto` (or set
+  `asyncio_mode = auto` in the project's `pytest.ini`/`pyproject.toml`), not a per-test mark.
+  `test/smoke.sh`'s HA venv stage does this; `test/fixtures/ha_smoke_test.py` is the minimal
+  real-`hass`-fixture test it runs.
+- **HA YAML linting.** `python3 -c 'import yaml'` and `yamllint` work against the **system**
+  Python (Debian's `python3-yaml`/`yamllint` packages — not a pip install into system Python,
+  which bookworm's PEP-668-externally-managed Python refuses by default). `pip3`/`python3 -m
+  venv` also work now (`python3-pip`/`python3-venv`), for anything that wants its own venv
+  without needing uv. `python3-pil`/ImageMagick were judged not worth the image weight: the
+  issue calls them minor with no acceptance criterion.
+- **`ha-yaml-check`** (`scripts/ha-yaml-check.py` → `/usr/local/bin/ha-yaml-check`): a PyYAML
+  `SafeLoader` subclass that registers an opaque constructor for exactly HA's eight custom
+  tags (`!secret`, `!include`, `!include_dir_list`, `!include_dir_named`,
+  `!include_dir_merge_list`, `!include_dir_merge_named`, `!env_var`, `!input`) rather than a
+  `!`-prefix multi-constructor — a prefix match would silently accept a typo'd tag (e.g.
+  `!secrets`) as valid instead of reporting it, and HA would then fail to resolve it for real
+  at load time. A genuine syntax error, or any tag outside that exact list, is reported as
+  `file:line: message` and exits non-zero. It validates syntax only, not HA schema semantics.
+  Recommended `yamllint` config for HA configs (put in `.yamllint` at the config root):
+  ```yaml
+  extends: default
+  rules:
+    line-length: disable
+    document-start: disable
+    truthy:
+      allowed-values: ["true", "false", "on", "off"]
+  ```
+  (HA's YAML makes heavy use of `on`/`off` truthy values and long `value_template` lines that
+  standard yamllint would otherwise flag.)
+- **Not attempted here — see §8.** Whether `hass --script check_config -c <copy of /config>`
+  catches the class of `template:` platform-schema errors that the REST `check_config` misses
+  is still open; the custom components' own requirements may make it impractical.
 
 ## 5. The `/feature` workflow
 
@@ -366,6 +447,13 @@ e. **`-c`/`--continue` correction:** it was previously believed `--continue` was
    `scripts/remote-control-launch.sh` might let sessions survive a force-update restart intact.
    **This is untested** — treat it as a candidate for its own `/feature`, not something to fold
    into an unrelated change.
+
+f. **Whether `hass --script check_config -c <copy of /config>` catches the `template:`
+   platform-schema errors that the REST `check_config` misses is untested** (issue #18,
+   surfaced during the 2026-09-13 `device_id` incident). Now that a real Python 3.14 + HA test
+   environment exists (§4b), this is worth trying — but the custom components' own dependency
+   requirements may make it impractical. Not attempted in the #18 change; treat as a candidate
+   for its own follow-up.
 
 ## 9. Scope reminder
 

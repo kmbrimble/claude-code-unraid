@@ -152,7 +152,14 @@ is deliberately not run per-iteration; in practice most changes here are validat
   `custom_models.json` seed-if-absent behaviour. Since 0.27 also the connector's wait
   clamping, deadline fields, `progress_events` transcript tail, idle-timeout kill-vs-spare
   behaviour and SIGTERM-to-SIGKILL escalation — all driven behaviourally against a real MCP
-  endpoint in a throwaway container, not asserted against the source.
+  endpoint in a throwaway container, not asserted against the source. Since 0.28: `uv`/
+  `python3.14` pinned versions and that system `python3` stays Debian's 3.11 unshadowed; a
+  real `uv venv --python 3.14` install of `pytest-homeassistant-custom-component` passing a
+  test against the actual `hass` fixture (slow, network-dependent, accepted); `ha-yaml-check`
+  against fixtures covering every HA tag, a genuine syntax error, and a misspelt/unregistered
+  tag; and the connector's `read_file` image support (byte-identical PNG/JPEG round-trip,
+  unchanged text, over-cap rejection, path-escape refusal) driven behaviourally the same way
+  as the 0.27 timeout checks.
 - Not covered at all: the entrypoint's Remote Control auto-launch path, `gh auth setup-git`,
   and anything that only manifests after a real force-update against the live host.
 

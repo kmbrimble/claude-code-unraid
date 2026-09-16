@@ -30,7 +30,7 @@ class HaSafeLoader(yaml.SafeLoader):
     pass
 
 
-def _construct_opaque(loader, tag_suffix, node):
+def _construct_opaque(loader, node):
     if isinstance(node, yaml.ScalarNode):
         return loader.construct_scalar(node)
     if isinstance(node, yaml.SequenceNode):
@@ -38,7 +38,11 @@ def _construct_opaque(loader, tag_suffix, node):
     return loader.construct_mapping(node)
 
 
-HaSafeLoader.add_multi_constructor("!", _construct_opaque)
+# Exact tags only, not a "!" prefix multi-constructor: a prefix match would
+# silently swallow a typo'd tag (e.g. "!secrets") as opaque instead of
+# reporting it, and HA would then fail to resolve it for real at load time.
+for _tag in HA_TAGS:
+    HaSafeLoader.add_constructor(_tag, _construct_opaque)
 
 
 def check_file(path: str) -> bool:
