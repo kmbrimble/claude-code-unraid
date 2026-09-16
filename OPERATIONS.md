@@ -369,7 +369,8 @@ cd /projects/.worktrees/<project>-<slug>
 onto a running Home Assistant via the SMB mount at `/ha-config` — a separate filesystem, outside
 git entirely. Two sessions in two clean worktrees can still both write there. Worktrees solve
 branch collisions; concurrent deploys to a live system need their own lock or a one-at-a-time
-rule, and that is still an open question for `ha-config`.
+rule. `ha-config` has one since 2026-09-17: `tools/deploy_lock.py`, lock at
+`/projects/.locks/ha-config.deploy.lock` — see that repo's CLAUDE.md, "Deploy and verify".
 
 Why this is written down: six worktrees from the September 2026 counsel evaluation
 (`_replay-butler` and friends) sat in `/projects/` for twelve days — 61 MB, and counted as
