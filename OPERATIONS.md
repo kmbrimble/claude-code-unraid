@@ -337,7 +337,7 @@ does not need one.
 ```
 git -C /projects/<project> worktree prune
 git -C /projects/<project> fetch origin
-git -C /projects/<project> worktree add -b <branch> \
+git -C /projects/<project> worktree add --no-track -b <branch> \
     /projects/.worktrees/<project>-<slug> origin/main
 cd /projects/.worktrees/<project>-<slug>
 ```
@@ -349,6 +349,16 @@ cd /projects/.worktrees/<project>-<slug>
   fast-forward only, so it **fails if `main` moved** since the worktree was cut — that failure
   is the collision detector, not an obstacle. Rebase onto the new `origin/main`, re-run the
   suite, push again. Never force.
+- **`--no-track` is load-bearing.** Without it the new branch tracks `origin/main`, so a
+  reflexive bare `git push` mid-work puts an unfinished branch straight onto `main`. With it
+  the branch has no upstream at all, and the explicit push above is the only route.
+- **Fast-forward the shared checkout after pushing**, so reads from `/projects/<project>` are
+  not stale: `git -C /projects/<project> merge --ff-only origin/main`. Skip it silently if
+  that checkout is not on `main` or not clean — that means another session is using it. This
+  matters because the push-based merge never updates the local ref, so without this step the
+  shared checkout quietly serves outdated files to anyone reading it, and this Project's
+  instructions tell sessions to read `OPERATIONS.md` before proposing changes. Found the hard
+  way: an edit made against the stale shared copy could not find text pushed minutes earlier.
 - **`git worktree add` refusing a branch already checked out elsewhere is the protection
   working.** Pick a different slug; never `--force` past it.
 - **Prune on the way IN, not just on the way out.** The connector SIGKILLs a job at its timeout
