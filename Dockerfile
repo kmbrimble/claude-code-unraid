@@ -163,6 +163,58 @@ RUN python3 -m venv /opt/semgrep/venv \
 # also passed explicitly by the skill; this is the belt to that braces.
 ENV SEMGREP_SEND_METRICS=off
 
+# Debian's python3-yaml/yamllint/python3-pip/python3-venv, for HA YAML linting
+# (issue #18) and to give the system Python a working pip3. Debian packages
+# rather than a pip install into system Python — bookworm's system Python is
+# PEP 668 externally-managed, so a bare `pip3 install` outside a venv refuses
+# by default. python3.11-venv is already installed above for PAL's venv;
+# python3-venv is added anyway so `python3 -m venv` is unambiguously
+# guaranteed. Pillow/ImageMagick deliberately NOT installed: the issue calls
+# them minor with no acceptance criterion, so they don't earn the image
+# weight this round.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-yaml yamllint python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# ha-yaml-check: a PyYAML SafeLoader that tolerates Home Assistant's custom
+# YAML tags (!secret, !include, !include_dir_list, !include_dir_named,
+# !include_dir_merge_list, !include_dir_merge_named, !env_var, !input) as
+# opaque values instead of trying to resolve them, so a config can be linted
+# for a genuine syntax error without a running HA instance. See
+# OPERATIONS.md for the recommended yamllint config for HA.
+COPY scripts/ha-yaml-check.py /usr/local/bin/ha-yaml-check
+RUN chmod +x /usr/local/bin/ha-yaml-check
+
+# uv + a uv-managed Python >= 3.14.2 (issue #18), alongside Debian's 3.11. The
+# live HA is 2026.9.1, whose pyproject.toml requires Python >= 3.14.2, and
+# pytest-homeassistant-custom-component 0.13.365 requires >= 3.14 — the
+# system's 3.11.2 can run neither. Pinned GitHub release tarball,
+# SHA256-verified, same pattern as osv-scanner/trufflehog/hadolint above.
+RUN set -eux; \
+    curl -fsSL -o /tmp/uv.tar.gz \
+      https://github.com/astral-sh/uv/releases/download/0.12.15/uv-x86_64-unknown-linux-gnu.tar.gz; \
+    echo "f97935763c04be3e692460a7aaeaaab8fc3b78fcf8b389da820b38ae7423a638  /tmp/uv.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/uv.tar.gz -C /tmp; \
+    install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv; \
+    install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx; \
+    rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+
+# UV_PYTHON_INSTALL_DIR is baked at /opt, NOT /root — /root is bind-mounted
+# from the persisted appdata home at runtime and would shadow anything the
+# image put there (same trap as the Android cmdline-tools and PAL above).
+# UV_PYTHON_BIN_DIR links a `python3.14` executable into /usr/local/bin;
+# `uv python install` without `--default` links only the versioned name, so
+# it never touches or shadows Debian's unversioned python3/pip3. Downloads
+# are `manual` so a later `uv venv --python 3.14` resolves to the
+# interpreter already baked in here rather than silently fetching a
+# different patch over the network at runtime. UV_CACHE_DIR is left at its
+# default (under $HOME/.cache/uv, i.e. the persisted home mount at runtime)
+# — no override needed for a cache that's supposed to survive rebuilds.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+ENV UV_PYTHON_BIN_DIR=/usr/local/bin
+ENV UV_PYTHON_DOWNLOADS=manual
+RUN uv python install 3.14.7
+
 # Unpinned, so it's the layer most likely to need deliberate invalidation
 # when a new Claude Code release should be picked up. Kept below the larger
 # baked layers (apt, ttyd, Playwright deps, cmdline-tools, PAL) so busting it

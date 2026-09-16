@@ -691,7 +691,7 @@ check "uv venv --python 3.14 installs pytest-homeassistant-custom-component and 
     . .venv/bin/activate
     uv pip install 'pytest-homeassistant-custom-component==$HA_PYTEST_VERSION'
     cp /tmp/ha_smoke_test.py test_ha_smoke.py
-    python -m pytest -q test_ha_smoke.py
+    python -m pytest -q --asyncio-mode=auto test_ha_smoke.py
   "
 
 # pip / PyYAML for HA YAML linting (issue #18). Debian packages, not a pip

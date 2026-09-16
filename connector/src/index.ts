@@ -39,6 +39,10 @@ const KILL_GRACE_MS = Number(process.env.KILL_GRACE_MS ?? 10_000);
 // Never read more than this from the tail of a session transcript: the live
 // ones reach tens of megabytes.
 const TAIL_BYTES = 256_000;
+// Cap on read_file's whole-file image reads (base64-encoded, never
+// truncated — a truncated image is corrupt). A few MB comfortably covers a
+// screenshot; env-overridable for the rare larger asset.
+const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES ?? 5_000_000);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,6 +77,17 @@ function safeProjectPath(p: string): string {
   const abs = path.resolve(PROJECTS_ROOT, p);
   if (abs !== PROJECTS_ROOT && !abs.startsWith(PROJECTS_ROOT + path.sep)) throw new Error(`Path escapes PROJECTS_ROOT: ${p}`);
   return abs;
+}
+
+// Detected by magic bytes, not extension — an extension is at most a
+// secondary hint, and read_file never uses it. PNG/JPEG are required by
+// issue #18; WebP/GIF cost the same few lines so they're included too.
+function detectImageMimeType(buf: Buffer): string | null {
+  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buf.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return "image/jpeg";
+  if (buf.subarray(0, 6).toString("latin1") === "GIF87a" || buf.subarray(0, 6).toString("latin1") === "GIF89a") return "image/gif";
+  if (buf.length >= 12 && buf.subarray(0, 4).toString("latin1") === "RIFF" && buf.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  return null;
 }
 
 /** Claude Code stores sessions under ~/.claude/projects/<cwd with / -> ->/<uuid>.jsonl */
@@ -644,12 +659,19 @@ function buildServer(): McpServer {
     "read_file",
     {
       title: "Read a file from a project",
-      description: "Read a text file inside PROJECTS_ROOT.",
+      description: `Read a file inside PROJECTS_ROOT. Text files are returned as UTF-8 text (truncated to max_bytes). PNG, JPEG, GIF and WebP images (detected by magic bytes) are returned whole as an MCP image content block instead — never truncated — up to ${MAX_IMAGE_BYTES} bytes (env-overridable via MAX_IMAGE_BYTES); a larger image is refused with a clear error rather than returned corrupt.`,
       inputSchema: { path: z.string().describe("Relative to PROJECTS_ROOT or absolute within it"), max_bytes: z.number().int().default(100_000) },
     },
     async ({ path: p, max_bytes }) => {
       const fp = safeProjectPath(p);
       const buf = await fs.readFile(fp);
+      const mimeType = detectImageMimeType(buf);
+      if (mimeType) {
+        if (buf.length > MAX_IMAGE_BYTES) {
+          throw new Error(`Image ${p} is ${buf.length} bytes, over the ${MAX_IMAGE_BYTES}-byte cap (MAX_IMAGE_BYTES)`);
+        }
+        return { content: [{ type: "image" as const, data: buf.toString("base64"), mimeType }] };
+      }
       return text(buf.subarray(0, max_bytes).toString("utf8"));
     },
   );

@@ -16,6 +16,7 @@ via `docker cp` before this runs):
 """
 import base64
 import json
+import re
 import sys
 import urllib.request
 
@@ -39,8 +40,19 @@ def call(token, session_id, method, params=None, id_=None, timeout=30):
     resp = urllib.request.urlopen(req, timeout=timeout)
     new_sid = resp.headers.get("mcp-session-id")
     raw = resp.read().decode().strip()
-    obj = json.loads(raw) if raw.startswith("{") else None
-    return new_sid, obj
+    if not raw:
+        return new_sid, None
+    if raw.startswith("{"):
+        candidates = [raw]
+    else:
+        candidates = re.findall(r"^data:\s*(\{.*\})\s*$", raw, re.MULTILINE)
+    objs = [json.loads(c) for c in candidates]
+    if id_ is None:
+        return new_sid, None
+    for o in objs:
+        if o.get("id") == id_:
+            return new_sid, o
+    return new_sid, (objs[-1] if objs else None)
 
 
 def connect(token):
