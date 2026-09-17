@@ -29,10 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# ttyd static binary (browser-based terminal). Pinned version for reproducibility.
-RUN wget -qO /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
-    && chmod +x /usr/local/bin/ttyd
-
 # Chromium's OS-level shared libraries (glib, nss, atk, ...), so Playwright
 # can launch Chromium without a per-session `apt-get`/`install-deps`. Only
 # the OS deps are installed here — the Playwright npm package and browser
@@ -217,7 +213,7 @@ RUN uv python install 3.14.7
 
 # Unpinned, so it's the layer most likely to need deliberate invalidation
 # when a new Claude Code release should be picked up. Kept below the larger
-# baked layers (apt, ttyd, Playwright deps, cmdline-tools, PAL) so busting it
+# baked layers (apt, Playwright deps, cmdline-tools, PAL) so busting it
 # only costs re-running this one small layer, not dragging any of those down
 # too.
 RUN npm install -g @anthropic-ai/claude-code claude-auto-retry

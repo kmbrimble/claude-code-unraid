@@ -426,6 +426,16 @@ image take effect."
 - **`/proc/uptime` inside this container reports the HOST's uptime**, not the container's. Use
   `docker inspect --format '{{.State.StartedAt}}' claude-code'` (run from the host, or via SSH)
   to find when the container itself actually started.
+- **A secret passed on a command line is a published secret.** `ttyd` was started with
+  `--credential user:password`, and argv is world-readable: the password to a writable root
+  shell into `/projects` was visible to anything that could list processes on the host, with no
+  Docker access needed. The same value also sat in `docker inspect`, in the dockerMan template
+  on the flash drive, and — least obviously — in ttyd's own startup log line
+  (`N: credential: <base64 of user:password>`), which lands in `docker logs claude-code`.
+  ttyd has no file or environment form of `-c`, on 1.7.7 or on upstream master, so there was
+  nothing to configure around it and the component was removed instead (0.29, issue #19).
+  Before adding any new long-running process here, check how it takes its secret: environment
+  variable or file, never argv, and check whether it logs the value at startup.
 - **Never pattern-kill processes by matching a string against `/proc/*/cmdline`.** An agent's
   own prompt text can contain the very string you're trying to match against a *different*
   process, and you can kill your own run. Match on a stable identifier (PID captured at spawn
@@ -483,19 +493,14 @@ image take effect."
 a. `claude-auto-retry`'s retry logic has never been proven end-to-end against a real rate
    limit — only unit-level/synthetic exit-code propagation has been verified (see §2).
 
-b. ttyd (browser terminal, port 7681, `TTYD_CREDENTIAL`-gated) copy/paste via OSC 52 is parked;
-   ttyd is a manual fallback only. It's served on a raw IP, so browser automation against it
-   would need per-action approval and is impractical as a driving mechanism — don't build
-   tooling that assumes it can be automated.
-
-c. `/projects/butler-preflight-20260808/` is an unidentified early Butler prototype snapshot
+b. `/projects/butler-preflight-20260808/` is an unidentified early Butler prototype snapshot
    (git repo, `Dockerfile`, `inventory.db`, "Stage 3" files, dated 26 Jul – 8 Aug, ~1.2MB).
    Awaiting Kieren's decision on whether to keep it. Do not delete or modify without asking.
 
-d. `/projects/_archive/` holds `monitor.js.txt` and `patterns.js.txt` — debug artefacts, safe
+c. `/projects/_archive/` holds `monitor.js.txt` and `patterns.js.txt` — debug artefacts, safe
    to delete whenever someone gets around to it.
 
-e. **`-c`/`--continue` correction:** it was previously believed `--continue` was unusable with
+d. **`-c`/`--continue` correction:** it was previously believed `--continue` was unusable with
    Remote Control (thought incompatible with `--spawn`). `claude remote-control --help` now
    lists `-c, --continue` to reattach to the session last recorded for a directory (roughly a
    4-hour window), and the entrypoint's auto-launch never passes `--spawn`. A
@@ -504,14 +509,14 @@ e. **`-c`/`--continue` correction:** it was previously believed `--continue` was
    **This is untested** — treat it as a candidate for its own `/feature`, not something to fold
    into an unrelated change.
 
-f. **Whether `hass --script check_config -c <copy of /config>` catches the `template:`
+e. **Whether `hass --script check_config -c <copy of /config>` catches the `template:`
    platform-schema errors that the REST `check_config` misses is untested** (issue #18,
    surfaced during the 2026-09-13 `device_id` incident). Now that a real Python 3.14 + HA test
    environment exists (§4b), this is worth trying — but the custom components' own dependency
    requirements may make it impractical. Not attempted in the #18 change; treat as a candidate
    for its own follow-up.
 
-g. **`test/connector_timeout_check.py`'s `mode_idle` forked-session check is intermittently
+f. **`test/connector_timeout_check.py`'s `mode_idle` forked-session check is intermittently
    flaky for a different reason than its neighbouring comment documents** (found investigating
    #18's smoke run, 16 Sep 2026). The comment above the fake-claude stub's `ACTIVE=1` branch
    attributes flakiness to a 0.25s heartbeat against a 2s idle timer leaving only 1s of slack

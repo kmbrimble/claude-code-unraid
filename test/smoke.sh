@@ -102,7 +102,17 @@ check "gh present" docker exec "$NAME" gh --version
 check "node present" docker exec "$NAME" node -v
 check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
-check "ttyd present" docker exec "$NAME" ttyd --version
+# ttyd was removed in 0.29 (issue #19). It could only take its basic-auth
+# credential on the command line, so the password to a writable root shell was
+# readable in `ps`, in `docker inspect`, in the dockerMan template on the flash
+# drive, and in ttyd's own startup log line; upstream has no file/env form of
+# `-c` even on master. Assert it stays gone, and that the replacement attach
+# path (unRAID's own webGUI terminal -> `docker exec -it ... tmux attach`)
+# still reaches the session.
+check "ttyd absent" docker exec "$NAME" bash -c '! command -v ttyd'
+check "no listener on 7681" docker exec "$NAME" bash -c \
+  '! (curl -s -o /dev/null --max-time 2 http://127.0.0.1:7681/)'
+check "claude tmux session attachable" docker exec "$NAME" tmux has-session -t claude
 
 # This container only ever needs a Docker CLIENT (it talks to the unRAID
 # host's daemon over the mounted socket) but Debian bookworm's `docker.io`
@@ -375,7 +385,7 @@ check "Android SDK platform 34 + build-tools installed" docker exec "$NAME" bash
 # doesn't depend on host port publishing. `run_command` is arbitrary shell in
 # a container holding the Docker socket, so the bearer token is the whole
 # security story: 401 without it, and no listener at all when CONNECTOR_TOKEN
-# is unset (same rule as ttyd).
+# is unset.
 MCP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}'
 check "connector /healthz responds" docker exec "$NAME" bash -c \
   'curl -sf http://127.0.0.1:8765/healthz | grep -q "\"ok\":true"'

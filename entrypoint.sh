@@ -22,8 +22,9 @@ tmux new-session -d -s claude -c /projects || true
 # claude-auto-retry's monitor only forks when $TMUX_PANE is set (see
 # src/tmux.js's getCurrentPane()). Its own createTmuxSession() path normally
 # guarantees that, but since we create the session ourselves above, set it
-# explicitly so any shell attaching later (ttyd's `-A`, or a manual `tmux
-# attach`) inherits a correct value regardless of how it attaches.
+# explicitly so any shell attaching later (a `docker exec ... tmux attach`, or
+# any other attach path) inherits a correct value regardless of how it
+# attaches.
 tmux set-environment -t claude TMUX_PANE "$(tmux list-panes -t claude -F '#{pane_id}')"
 
 # Ensure ~/.bashrc sources the version-controlled wrapper (scripts/claude-wrapper.sh,
@@ -112,18 +113,16 @@ mkdir -p "${ANDROID_SDK_ROOT}" "${GRADLE_USER_HOME}"
 # synchronously instead of racing this background job.
 /usr/local/lib/android-sdk-bootstrap.sh >"${HOME}/android-sdk-bootstrap.log" 2>&1 &
 
-# Optionally start the browser-based terminal (ttyd), for LAN use.
-# SAFETY: ttyd is started ONLY if TTYD_CREDENTIAL (format user:password) is
-# set, so there is never an unauthenticated web shell. ttyd serves a real
-# shell into a container that has the Docker socket (effectively host root),
-# so this must stay on the trusted LAN and always be password protected.
-if [ -n "${TTYD_CREDENTIAL:-}" ]; then
-  ttyd --writable --port 7681 --credential "${TTYD_CREDENTIAL}" \
-    tmux new-session -A -s claude -c /projects &
-  echo "ttyd web terminal started on port 7681 (password protected)."
-else
-  echo "No TTYD_CREDENTIAL set; browser terminal disabled."
-fi
+# ttyd (browser terminal on 7681) was removed in 0.29 — see issue #19. It had
+# no way to take its basic-auth credential other than argv, so the password to
+# a writable root shell was readable in `ps`, in `docker inspect`, in the
+# dockerMan template on the flash drive, and in ttyd's own startup log line.
+# Upstream has no credential file/env option even on master, and 1.7.7
+# (Mar 2024) is still the newest release, so there was nothing to upgrade to.
+# The browser terminal is now unRAID's own webGUI terminal, authenticated by
+# the webGUI login, from which:
+#   docker exec -it claude-code tmux attach -t claude
+# reaches this same tmux session. Do not reintroduce a TTYD_CREDENTIAL.
 
 # Optionally start claude-code-connector (MCP over HTTP on port 8765) so
 # Claude Cowork can drive the `claude` CLI in this container.

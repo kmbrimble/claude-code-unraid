@@ -13,7 +13,7 @@
   <ReadMe/>
   <Overview>Autonomous Claude Code agent, unRAID managed.</Overview>
   <Category>Productivity:</Category>
-  <WebUI>http://[IP]:[PORT:7681]/</WebUI>
+  <WebUI/>
   <TemplateURL/>
   <Icon/>
   <ExtraParams>--restart=unless-stopped --add-host=claude.kiztigs.com:192.168.0.23</ExtraParams>
@@ -29,8 +29,6 @@
   <Config Name="Docker socket" Target="/var/run/docker.sock" Default="" Mode="rw" Description="Lets the agent control other containers. High privilege." Type="Path" Display="always" Required="false" Mask="{8}">/var/run/docker.sock</Config>
   <Config Name="HA base URL" Target="HA_BASE_URL" Default="http://192.168.0.21:8123" Mode="" Description="Home Assistant API base" Type="Variable" Display="always" Required="false" Mask="{8}">http://192.168.0.21:8123</Config>
   <Config Name="GH_TOKEN" Target="GH_TOKEN" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="true"></Config>
-  <Config Name="ttyd Web Terminal" Target="7681" Default="7681" Mode="tcp" Description="" Type="Port" Display="always" Required="false" Mask="false">7681</Config>
-  <Config Name="TTYD Credential" Target="TTYD_CREDENTIAL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="Connector (MCP)" Target="8765" Default="8765" Mode="tcp" Description="claude-code-connector MCP endpoint at http://[IP]:8765/mcp" Type="Port" Display="always" Required="false" Mask="false">8765</Config>
   <Config Name="CONNECTOR_TOKEN" Target="CONNECTOR_TOKEN" Default="" Mode="" Description="Bearer token for the MCP connector. Leave empty to disable it." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="Usage collector" Target="8766" Default="8766" Mode="tcp" Description="claude-usage-collector JSON endpoint at http://[IP]:8766/usage, for the macOS usage widget. Serves usage percentages and spend figures only — never a credential." Type="Port" Display="always" Required="false" Mask="false">8766</Config>

@@ -6,6 +6,43 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.29 (2026-09-18)
+
+- **Removed `ttyd` and `TTYD_CREDENTIAL`** (closes #19). `ttyd` was started as
+  `ttyd --writable --port 7681 --credential "$TTYD_CREDENTIAL" tmux new-session -A -s claude`,
+  and argv is world-readable, so the password guarding a **writable root shell into
+  `/projects`** — with the agent's GitHub token, SSH keys and the Docker socket behind it — was
+  readable by anything that could list processes on the unRAID host, needing no Docker access
+  at all. Three further copies of the same value were confirmed on 2026-09-17: the
+  `docker inspect` environment, the dockerMan template XML on the flash drive, and ttyd's own
+  startup log line `N: credential: <base64 of user:password>`, which persists in
+  `docker logs claude-code`. The credential in use was 8 characters.
+  **There was nothing to configure around it.** ttyd's option table was checked on the bundled
+  1.7.7 *and* on upstream `master`: the only inputs are `-c/--credential` (argv) and
+  `-H/--auth-header` (delegate auth to a reverse proxy entirely). No file or environment form
+  of `-c` exists, and 1.7.7 (Mar 2024) is still the newest release, so no upgrade fixes this.
+  Of the three options in #19, option 2 was taken:
+  - The `-H` route was rejected as a net *downgrade* here. This container sits on the default
+    bridge at `172.17.0.6`, so with `-H` anything able to reach `172.17.0.6:7681` without
+    passing through the proxy would get an **unauthenticated** root shell. The unix-socket
+    variant is sound but Nginx Proxy Manager is a separate container, so it would need a shared
+    socket bind-mount plus a hand-written nginx snippet (NPM's UI cannot proxy to a socket) —
+    a lot of moving parts for a path `OPERATIONS.md` §8 already called a manual fallback only.
+  - Nothing is lost. `docker exec -it claude-code tmux attach -t claude` reaches the same tmux
+    session (verified against the live container), and unRAID's own webGUI terminal — which
+    runs ttyd on a unix socket behind the webGUI login, with no credential in argv — provides
+    that from a browser. The browser terminal therefore still exists; it is now gated by the
+    unRAID login rather than by a shared 8-character password.
+  Changes: the ttyd download layer is gone from the `Dockerfile`; the `TTYD_CREDENTIAL`-gated
+  launch block is gone from `entrypoint.sh` (replaced by a comment recording why, so it is not
+  reintroduced); `templates/claude-code.xml` drops the `7681` port mapping and the
+  `TTYD Credential` variable, and its `<WebUI>` (which pointed at `[PORT:7681]`) is now empty;
+  `test/smoke.sh` replaces `check "ttyd present"` with three assertions — `ttyd` absent, no
+  listener on `7681`, and the `claude` tmux session still attachable; README and `OPERATIONS.md`
+  §7/§8 updated. The stale `TTYD_CREDENTIAL` value should be treated as burned regardless — it
+  has been readable in the process list for the life of the container.
+
+
 ## 0.28 (2026-09-16)
 
 - **Python 3.14 via uv, pip/PyYAML for HA YAML linting, and image support in the connector's
