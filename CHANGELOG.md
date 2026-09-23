@@ -6,6 +6,26 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.30 (2026-09-24)
+
+- **Claude Code now always tracks npm `latest`, with no pin.** New `scripts/claude-update.sh`
+  (installed at `/usr/local/lib/claude-update.sh`): `entrypoint.sh` runs
+  `update_claude_code_once` synchronously before PAL registration, the connector and Remote
+  Control launch, then backgrounds `update_claude_code_loop` (hourly,
+  `CLAUDE_UPDATE_INTERVAL_SECONDS`). It compares `claude --version` with
+  `npm view @anthropic-ai/claude-code@latest version` and installs that exact version only when
+  they differ; npm unreachable, junk output or a failed install are logged and leave the current
+  version in place — never fatal. `CLAUDE_CODE_AUTO_UPDATE=0` disables it. Log:
+  `~/claude-update.log` (changes and failures only).
+  **Why:** the live container sat on 2.1.273 for a week while 2.1.280 shipped Opus 5.5. The
+  Dockerfile's unpinned `npm install -g` only captures `latest` at build time and the registry
+  layer cache usually reuses that layer, and Claude Code's own background updater never advanced
+  in this container (`claude doctor`: last attempt 2026-09-12). Running `claude` processes are
+  never touched; only processes started after an update get the new version.
+  `test/smoke.sh`: behavioural check against stub `npm`/`claude` (behind → installs exact
+  version; current → no-op; npm down/junk → no install, exit 0; opt-out honoured) plus an
+  entrypoint wiring/loop-running check.
+
 ## 0.29 (2026-09-18)
 
 - **Removed `ttyd` and `TTYD_CREDENTIAL`** (closes #19). `ttyd` was started as

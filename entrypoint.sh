@@ -45,6 +45,16 @@ if ! grep -q '\.bashrc' "${HOME}/.bash_profile" 2>/dev/null; then
   echo '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"' >> "${HOME}/.bash_profile"
 fi
 
+# Keep the Claude Code CLI on npm's `latest` — never pinned (scripts/claude-update.sh
+# explains why the image layer alone can't). Synchronous here, before PAL
+# registration, the connector and Remote Control launch, so all of them start on
+# the newest release even when the image itself is stale; then re-checked on an
+# interval in the background. Never fatal: offline or a failed install just
+# leaves the current version in place. Log: ~/claude-update.log.
+source /usr/local/lib/claude-update.sh
+update_claude_code_once | tee -a "${HOME}/claude-update.log" || true
+update_claude_code_loop >>"${HOME}/claude-update.log" 2>&1 &
+
 # PAL MCP server: non-Claude code-review advisor wired to Bedrock. Seed
 # custom_models.json onto the persisted home mount from the image-baked
 # default ONLY if absent, so Kieren can edit the roster without a rebuild and

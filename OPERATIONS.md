@@ -44,7 +44,7 @@ see §6 on why versions drift silently on force-update):
 |---|---|---|
 | Docker CLI | `29.7.2`, build `a7dcaa6` (Docker CE, not `docker.io`) | `docker --version` |
 | `ps`, `free`, `top` | present at `/usr/bin/{ps,free,top}` (procps) | `which ps free top` |
-| Claude Code CLI | `2.1.259` | `claude --version` inside a login shell |
+| Claude Code CLI | tracks npm `latest` — never pinned; updated at container start and hourly by `scripts/claude-update.sh` (§6a). 2.1.281 on 2026-09-24 | `claude --version`; `~/claude-update.log`; `claude doctor` |
 | PAL MCP server | `9.8.2` (SHA `fa78edca0b6bc04ab00ddf5694d855f1b946b87d`), 6 live tools
   (`consensus`, `codereview`, `precommit`, `challenge`, plus hardcoded-essential
   `listmodels`/`version`) | `/opt/pal-mcp/venv/bin/pal-mcp-server` MCP `initialize` +
@@ -415,6 +415,30 @@ A container **recreate** (e.g. editing the CA template and hitting Apply) uses t
 pulled/cached image and does **not** pull a new one — only a genuine force-update
 (`update_container`) pulls. Don't confuse the two when trying to explain "why didn't my new
 image take effect."
+
+## 6a. Keeping Claude Code current
+
+Kieren's standing requirement: the container always runs the newest Claude Code release — no
+version pin, ever. The image's `npm install -g @anthropic-ai/claude-code` is only a baseline (the
+registry layer cache usually reuses it, so a rebuild does **not** reliably refresh it), and Claude
+Code's built-in background updater has not been advancing here. `scripts/claude-update.sh` does
+the job instead:
+
+- **At start**, synchronously in `entrypoint.sh`, before PAL registration, the connector and Remote
+  Control launch — so even a stale image comes up on `latest`. Bounded by `timeout` (30s query,
+  300s install) and never fatal.
+- **Hourly** in a background loop (`CLAUDE_UPDATE_INTERVAL_SECONDS`). Silent when current; logs
+  changes and failures to `~/claude-update.log`.
+- Running processes keep the version they started with. Connector jobs spawn a fresh `claude` per
+  job, so they pick up an update immediately; long-lived Remote Control sessions only on restart.
+- To update right now without waiting: `npm install -g @anthropic-ai/claude-code@latest` (or
+  `claude update`). No restart needed. Avoid `npm update -g`, which honours the original semver
+  range.
+- `CLAUDE_CODE_AUTO_UPDATE=0` (plain `-e` in the template) disables it for debugging only.
+- This follows the `latest` channel, not `stable`, deliberately: new models (e.g. Opus 5.5 in
+  2.1.280) arrive there first. The cost is that a regressed release also lands automatically; if
+  one does, pin temporarily with `CLAUDE_CODE_AUTO_UPDATE=0` plus a manual install of a known-good
+  version, and remove the opt-out once fixed.
 
 ## 7. Traps and lessons
 

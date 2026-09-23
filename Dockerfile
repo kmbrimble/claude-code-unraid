@@ -211,8 +211,9 @@ ENV UV_PYTHON_BIN_DIR=/usr/local/bin
 ENV UV_PYTHON_DOWNLOADS=manual
 RUN uv python install 3.14.7
 
-# Unpinned, so it's the layer most likely to need deliberate invalidation
-# when a new Claude Code release should be picked up. Kept below the larger
+# Unpinned baseline only. The registry layer cache means this layer is usually
+# reused, so it is NOT what keeps Claude Code current — entrypoint.sh does that at
+# every start and hourly (scripts/claude-update.sh). Kept below the larger
 # baked layers (apt, Playwright deps, cmdline-tools, PAL) so busting it
 # only costs re-running this one small layer, not dragging any of those down
 # too.
@@ -247,6 +248,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 COPY scripts/claude-wrapper.sh /usr/local/lib/claude-wrapper.sh
 COPY scripts/remote-control-launch.sh /usr/local/lib/remote-control-launch.sh
 COPY scripts/remote-log-cap.sh /usr/local/lib/remote-log-cap.sh
+COPY scripts/claude-update.sh /usr/local/lib/claude-update.sh
 COPY scripts/android-sdk-bootstrap.sh /usr/local/lib/android-sdk-bootstrap.sh
 RUN chmod +x /usr/local/lib/android-sdk-bootstrap.sh
 

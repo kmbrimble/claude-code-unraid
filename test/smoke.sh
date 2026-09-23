@@ -336,6 +336,59 @@ check "remote-log-cap caps a real log via cap_remote_control_logs, keeps head, s
     [ "$after2_content" = "$after_content" ]
   '
 
+# Claude Code must track npm `latest` with no pin (scripts/claude-update.sh):
+# the image layer alone froze on 2.1.273 for a week while Opus 5.5 shipped in
+# 2.1.280. Drive update_claude_code_once against stub npm/claude on PATH so the
+# decision logic is tested without touching the real install or the network:
+# older -> installs exactly the advertised version; equal -> no install; npm
+# unreachable or returning junk -> no install and still exit 0 (it runs
+# synchronously in entrypoint.sh, so it must never block or fail startup);
+# CLAUDE_CODE_AUTO_UPDATE=0 -> nothing at all.
+check "claude-update: installs npm latest when behind, no-ops when current, never fails" \
+  docker exec "$NAME" bash -c '
+    set -e
+    source /usr/local/lib/claude-update.sh
+    stub=$(mktemp -d)
+    cat > "$stub/npm" <<"S"
+#!/bin/sh
+case "$1" in
+  view) [ -n "$STUB_LATEST" ] || exit 1; echo "$STUB_LATEST" ;;
+  install) echo "$*" >> "$STUB_DIR/installs"; v="${3##*@}"; echo "$v" > "$STUB_DIR/version" ;;
+esac
+S
+    cat > "$stub/claude" <<"S"
+#!/bin/sh
+echo "$(cat "$STUB_DIR/version") (Claude Code)"
+S
+    chmod +x "$stub/npm" "$stub/claude"
+    export PATH="$stub:$PATH" STUB_DIR="$stub"
+    n() { [ -f "$stub/installs" ] && wc -l < "$stub/installs" || echo 0; }
+
+    echo 1.0.0 > "$stub/version"; export STUB_LATEST=1.2.3
+    update_claude_code_once
+    [ "$(n)" -eq 1 ] && grep -qx "install -g @anthropic-ai/claude-code@1.2.3" "$stub/installs"
+    [ "$(claude --version)" = "1.2.3 (Claude Code)" ]
+
+    update_claude_code_once
+    [ "$(n)" -eq 1 ]
+
+    export STUB_LATEST=""
+    update_claude_code_once
+    export STUB_LATEST="<html>proxy error</html>"
+    update_claude_code_once
+    [ "$(n)" -eq 1 ]
+
+    export STUB_LATEST=9.9.9 CLAUDE_CODE_AUTO_UPDATE=0
+    update_claude_code_once
+    [ "$(n)" -eq 1 ]
+  '
+check "entrypoint runs the claude-update check at start and backgrounds the loop" \
+  docker exec "$NAME" bash -c '
+    grep -q "update_claude_code_once" /usr/local/bin/entrypoint.sh &&
+    grep -q "update_claude_code_loop" /usr/local/bin/entrypoint.sh &&
+    ps -eo args | grep -qx "sleep 3600"
+  '
+
 # Chromium's OS-level shared libraries must be baked into the image so
 # Playwright/Chromium runs without a per-session `apt-get`/`install-deps`.
 # This downloads the Chromium *browser binary* via npx (not baked into the
