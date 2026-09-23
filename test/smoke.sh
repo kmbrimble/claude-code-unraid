@@ -6,15 +6,60 @@ set -uo pipefail
 TAG="claude-code-smoketest:local"
 NAME="cc-smoketest"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOME_DIR="$(mktemp -d)"
 
 PASS_COUNT=0
 FAIL_COUNT=0
 
+# Throwaway /root homes for the containers this script starts.
+#
+# TRAP: `mktemp -d` runs wherever this script runs, but `-v "$dir:/root"` is
+# resolved by the Docker DAEMON. When the script runs inside the claude-code
+# container (the normal case), the daemon is on the unRAID host, so it creates
+# and fills a SEPARATE host directory at the same path, and a local `rm -rf`
+# only deletes the empty local one. Every run used to leak 2-4 GB of populated
+# homes into the host's /tmp, which on unRAID is RAM. So each home is removed
+# twice: locally, and on the daemon's side by a one-shot container from the
+# image under test (no extra image pull). Where client and daemon share a
+# filesystem the second removal is a harmless no-op.
+SCRATCH_HOMES=()
+new_home() {
+  local dir
+  dir="$(mktemp -d)" || exit 1
+  SCRATCH_HOMES+=("$dir")
+  printf -v "$1" '%s' "$dir"
+}
+remove_home() {
+  local dir="$1" parent base
+  parent="$(dirname "$dir")"
+  base="$(basename "$dir")"
+  # Guard: the daemon-side removal mounts the PARENT directory, so refuse
+  # anything that is not a mktemp-shaped leaf rather than risk `rm -rf` on it.
+  case "$base" in tmp.?*) ;; *) return 1 ;; esac
+  rm -rf "$dir"
+  docker image inspect "$TAG" >/dev/null 2>&1 || return 0
+  docker run --rm --entrypoint rm -v "$parent:/scratch-parent" "$TAG" \
+    -rf "/scratch-parent/$base" >/dev/null 2>&1
+}
+# True if the daemon's side of the filesystem no longer has this path.
+home_gone_on_daemon() {
+  docker run --rm --entrypoint sh -v "$(dirname "$1"):/scratch-parent" "$TAG" \
+    -c "test ! -e '/scratch-parent/$(basename "$1")'" >/dev/null 2>&1
+}
+
+new_home HOME_DIR
+
 cleanup() {
-  docker rm -f "$NAME" >/dev/null 2>&1
+  local suffix dir
+  # Sub-test containers too: a check that dies mid-way leaves its container
+  # running with its home still mounted.
+  for suffix in "" -timeout -idle -collector -notoken; do
+    docker rm -f "${NAME}${suffix}" >/dev/null 2>&1
+  done
+  # Before the rmi: remove_home needs the image to reach the daemon's side.
+  for dir in "${SCRATCH_HOMES[@]}"; do
+    remove_home "$dir"
+  done
   docker rmi "$TAG" >/dev/null 2>&1
-  rm -rf "$HOME_DIR"
 }
 trap cleanup EXIT
 
@@ -568,7 +613,7 @@ install_connector_fixtures() {
 }
 
 TIMEOUT_NAME="${NAME}-timeout"
-TIMEOUT_HOME="$(mktemp -d)"
+new_home TIMEOUT_HOME
 docker run -d --name "$TIMEOUT_NAME" -v "$TIMEOUT_HOME:/root" \
   -e CONNECTOR_TOKEN="$TIMEOUT_TOKEN" -e DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" \
   -e KILL_GRACE_MS="$GRACE_MS" -e MAX_WAIT_SECONDS="$MAX_WAIT" \
@@ -579,7 +624,7 @@ check "connector honours DEFAULT_TIMEOUT_MS, escalates SIGTERM to SIGKILL, clamp
   docker exec "$TIMEOUT_NAME" python3 /tmp/connector_timeout_check.py \
     --mode=timeout "$TIMEOUT_TOKEN" "$((TIMEOUT_MS / 1000))" "$MAX_WAIT" "$((GRACE_MS / 1000))"
 docker rm -f "$TIMEOUT_NAME" >/dev/null 2>&1
-rm -rf "$TIMEOUT_HOME"
+remove_home "$TIMEOUT_HOME"
 
 # Idle timeout: kills a job that has stopped making progress, not one that is
 # merely long. The wall clock is deliberately set far out of reach here, so a
@@ -587,7 +632,7 @@ rm -rf "$TIMEOUT_HOME"
 # timer reads the session transcript, since a `claude -p` job produces no
 # stdout at all until it finishes.
 IDLE_NAME="${NAME}-idle"
-IDLE_HOME="$(mktemp -d)"
+new_home IDLE_HOME
 IDLE_MS=2000
 docker run -d --name "$IDLE_NAME" -v "$IDLE_HOME:/root" \
   -e CONNECTOR_TOKEN="$TIMEOUT_TOKEN" -e DEFAULT_TIMEOUT_MS=60000 \
@@ -599,7 +644,8 @@ check "connector's IDLE_TIMEOUT_MS kills a stalled job and spares a slow but tra
   docker exec "$IDLE_NAME" python3 /tmp/connector_timeout_check.py \
     --mode=idle "$TIMEOUT_TOKEN" "$((IDLE_MS / 1000))"
 docker rm -f "$IDLE_NAME" >/dev/null 2>&1
-rm -rf "$IDLE_HOME" "$FAKE_CLAUDE"
+remove_home "$IDLE_HOME"
+rm -f "$FAKE_CLAUDE"
 
 # claude-usage-collector: an OPTIONAL service for the macOS usage widget
 # (github.com/kmbrimble/claude-usage-widget). Its binary is deliberately not
@@ -626,7 +672,7 @@ check "entrypoint reports an absent collector binary instead of failing" bash -c
 # PAL handshake check above relies on the same thing). So: start the container,
 # copy the stub in, then restart so the entrypoint runs again with it present.
 COLLECTOR_NAME="${NAME}-collector"
-COLLECTOR_HOME="$(mktemp -d)"
+new_home COLLECTOR_HOME
 COLLECTOR_STUB="$(mktemp)"
 cat > "$COLLECTOR_STUB" <<'STUB'
 #!/bin/sh
@@ -647,16 +693,29 @@ check "entrypoint launches a collector binary that is present, on 8766" \
 check "entrypoint passes USAGE_COLLECTOR_TOKEN through to the collector" \
   docker exec "$COLLECTOR_NAME" grep -q "TOKEN=smoketest-usage-token" /root/collector-stub-ran
 docker rm -f "$COLLECTOR_NAME" >/dev/null 2>&1
-rm -rf "$COLLECTOR_HOME" "$COLLECTOR_STUB"
+remove_home "$COLLECTOR_HOME"
+rm -f "$COLLECTOR_STUB"
 
 NOTOKEN_NAME="${NAME}-notoken"
-NOTOKEN_HOME="$(mktemp -d)"
+new_home NOTOKEN_HOME
 docker run -d --name "$NOTOKEN_NAME" -v "$NOTOKEN_HOME:/root" "$TAG" >/dev/null 2>&1
 sleep 3
 check "connector does not listen when CONNECTOR_TOKEN is unset" docker exec "$NOTOKEN_NAME" bash -c \
   '! curl -sf http://127.0.0.1:8765/healthz >/dev/null'
 docker rm -f "$NOTOKEN_NAME" >/dev/null 2>&1
-rm -rf "$NOTOKEN_HOME"
+remove_home "$NOTOKEN_HOME"
+
+# The four sub-test homes above are finished with, so none of them may still
+# exist where the daemon created them (see the TRAP note at new_home). This
+# is the check that would have caught the host /tmp leak.
+sub_test_homes_gone() {
+  local d
+  for d in "$TIMEOUT_HOME" "$IDLE_HOME" "$COLLECTOR_HOME" "$NOTOKEN_HOME"; do
+    home_gone_on_daemon "$d" || return 1
+  done
+}
+check "throwaway container homes are removed on the Docker daemon's side, not just locally" \
+  sub_test_homes_gone
 
 # PAL MCP server (code-review advisor via AWS Bedrock, wired as an
 # OpenAI-compatible custom provider). Baked at /opt so it survives an empty

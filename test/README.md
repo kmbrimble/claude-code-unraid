@@ -21,4 +21,10 @@ check for `gh`, `node`, `git`, and `tmux`, times how long `docker stop` takes,
 and prints `PASS`/`FAIL` for each check plus a final summary. It always
 cleans up the container and image it created, even on failure, via a trap.
 
+Throwaway `/root` homes are bind mounts, and `-v` paths are resolved by the
+Docker daemon, not by the shell running this script. When the script runs in a
+container with the host's socket mounted, the daemon creates a separate copy
+of each home on the host, so a plain local `rm -rf` misses it. `new_home` and
+`remove_home` handle both copies. Use them for any new bind-mounted directory.
+
 Exits `0` if all checks pass, `1` otherwise.

@@ -6,6 +6,20 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.31 (2026-09-24)
+
+- **`test/smoke.sh` no longer leaks its container homes into the host's `/tmp`.** Each run
+  bind-mounted `mktemp -d` directories as `/root`, but `-v` is resolved by the Docker daemon on
+  the unRAID host, so the daemon created and filled separate host directories at the same paths
+  and the trap's `rm -rf` only removed the empty local ones. Every run leaked 2-4 GB of
+  populated homes into host `/tmp`, which on unRAID is RAM; 53 of them (~24 GB) had built up
+  by 24 Sep, alongside eight `cc-*` containers and four test images left over from #18.
+  Homes now go through `new_home`/`remove_home`, which also remove the daemon-side copy with a
+  one-shot container from the image under test. The bind-mount semantics from #9 are
+  unchanged. The EXIT trap also removes the sub-test containers, so a check that dies part way
+  cannot leave one running. New check: the four sub-test homes must be gone on the daemon's
+  side.
+
 ## 0.30 (2026-09-24)
 
 - **Claude Code now always tracks npm `latest`, with no pin.** New `scripts/claude-update.sh`
