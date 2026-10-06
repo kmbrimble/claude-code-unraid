@@ -512,6 +512,25 @@ the job instead:
     arguments, so `US$0.15` rendered as `US/projects/unraid-dormouse.15`. Write currency as
     `0.15 USD` in skills and commands.
 
+- **`CLAUDE_CODE_OAUTH_TOKEN` is stripped from the environment of commands a session's Bash
+  tool runs — so a nested `claude -p` launched by a session is not logged in.** The container
+  authenticates with that token (kept in secretsman); `~/.claude/.credentials.json` is a stale
+  leftover from the old saved login (`expiresAt: 0`) and cannot be refreshed. The connector's
+  own shell (`run_command`) has the variable and `claude -p` works there; inside a
+  `start_session`/`continue_session` run the variable is absent, the nested process falls back
+  to the stale file, and every pass fails with `Failed to authenticate: OAuth session expired
+  and could not be refreshed`. This silently cost two where-to-next review runs (5–6 Oct 2026),
+  which fell back to subagent/advisor reviews. Fixed 6 Oct 2026 without an image change:
+  - `~/.claude/review-lib/run-passes.sh` now recovers the token from `/proc/1/environ` when
+    `CLAUDE_CODE_OAUTH_TOKEN` is unset, and exports it for its passes. `run-scanners.sh` does
+    not call `claude` and was not changed. Pre-change copy:
+    `~/.claude/backups/review-oauth-token-20261006/`.
+  - Verified with a connector `start_session` on where-to-next: the session's shell reported
+    the token unset, and two `run-passes.sh` passes both returned `is_error=false`.
+  - **A bare `claude -p` probe from `run_command` proves nothing about sessions** — it has the
+    token. Probe from inside a session. Any other script that spawns `claude` from a session
+    needs the same recovery.
+
 ## 8. Open items
 
 a. `claude-auto-retry`'s retry logic has never been proven end-to-end against a real rate
