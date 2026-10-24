@@ -24,12 +24,49 @@ agent session runs inside when working via the Claude Code CLI MCP connector.
 - `/mnt/user/appdata/claude-code/config` → `/config`
 - `/var/run/docker.sock` → `/var/run/docker.sock` (see §4 — this is effectively host root)
 
+Optional mounts, off unless you set them in the CA template (empty value = not mounted):
+
+- `/host/boot` (**read-write**) ← host `/boot`, the unRAID flash drive
+- `/host/mnt` (**read-only**) ← host `/mnt`
+
+See "Optional host mounts" below. They are additions, not changes to the four mappings above.
+
 No new top-level mount for PAL: `/root/.claude/pal/custom_models.json` lives inside the
 existing home mount above, seeded by `entrypoint.sh` from an image-baked default only if
 absent — edit it directly on the host and it survives a rebuild (see §4a).
 
 Do not change any destination path without updating the unRAID CA template in step — changing
 a mapping orphans existing state.
+
+### Optional host mounts (`/host/boot`, `/host/mnt`)
+
+Both are non-required entries in `templates/claude-code.xml`, with empty values so a fresh
+install does not get them. Set them to `/boot` and `/mnt` in the CA template to enable.
+
+**Why they exist.** Agents were starting throwaway containers (`docker run --rm alpine ls
+/mnt/...`, `python:3.12-slim`, and so on) just to look at host files, and every one left an
+orphan image in dockerMan (issue #20). With these mounts, host files are read in place.
+
+- **`/host/mnt` is read-only on purpose.** It exposes every share to anything running here,
+  including the connector's `run_command`, so it must not be writable. Never map a
+  read-write `/mnt/user`. Jobs that must write under `/mnt` still need a deliberate,
+  narrow mount on a throwaway container, not this one.
+- **`/host/boot` is read-write on purpose.** unraid-ops work edits User Scripts and dockerMan
+  templates under `/boot/config`, and those edits have to land on the flash drive. The cost:
+  **edits are permanent on the flash and survive reboots**, and a bad edit to a template, User
+  Script or config can stop Docker or the array coming up. Leave it unset if no host work is
+  planned. Anything that only needs to read should use `/host/mnt` or a read-only mount.
+
+Neither mount is created or owned by this repo: the host provides them and the template only
+names them. Both depend on the container's Docker socket and the connector token staying
+private, since either path is host reach from inside the container.
+
+**Site-specific mounts, not template entries.** The live container also maps things like a
+Home Assistant config share at `/ha-config` (`rw,slave`, from an unRAID Unassigned Devices
+remote mount) and a MagicMirror directory at `/magicmirror-live`. They are examples of the
+pattern only: they depend on one household's hosts and paths, so they are deliberately not in
+the template. Add your own as extra `Path` entries in dockerMan, and do not change the four
+persistence destinations to make room.
 
 ### Network
 
