@@ -6,6 +6,16 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.32 (2026-10-24)
+
+- **The Go toolchain on the persisted home mount is now on PATH for non-login shells.** A
+  Dockerfile `ENV PATH="/root/go-toolchain/go/bin:${PATH}"` mirrors the guarded entry already in
+  `~/.bashrc`, which only login shells read. The Bash tool's shell is not one, so `go` reported
+  "command not found" despite go1.27.1 being installed, and agents pulled `golang:1.23-alpine`
+  for every `go test`. The image still ships no Go: the directory belongs to the home mount,
+  and a missing directory is a harmless PATH no-op. No GOROOT/GOPATH are set, matching
+  `.bashrc`. Takes effect on the next image rebuild and container recreate (#20).
+
 ## 0.31 (2026-09-24)
 
 - **`test/smoke.sh` no longer leaks its container homes into the host's `/tmp`.** Each run

@@ -242,6 +242,14 @@ ENV ANDROID_HOME=${ANDROID_SDK_ROOT}
 ENV GRADLE_USER_HOME=/root/.gradle
 ENV PATH="${ANDROID_SDK_ROOT}/platform-tools:/opt/android-cmdline-tools/latest/bin:${JAVA_HOME}/bin:${PATH}"
 
+# Go toolchain on the persisted home mount (installed by claude-usage-widget, not by
+# this image). ~/.bashrc already puts it on PATH, but only login shells read that, so
+# the Bash tool's non-login shell reported `go: command not found` and agents pulled
+# golang:* images instead (issue #20). Mirrors the .bashrc entry: PATH only, prepended;
+# GOROOT and GOPATH are derived by the toolchain. A missing directory is a harmless
+# no-op, and .bashrc's own guard sees it already present, so nothing is duplicated.
+ENV PATH="/root/go-toolchain/go/bin:${PATH}"
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
