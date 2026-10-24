@@ -6,6 +6,19 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.33 (2026-10-24)
+
+- **Repo template caught up with the live one, and documents the optional `/host` mounts.**
+  `templates/claude-code.xml` gains `/host/boot` (read-write) and `/host/mnt` (read-only) as
+  non-required entries with empty values, so they are opt-in; the descriptions say plainly that
+  `/host/boot` edits are permanent on the flash drive. It also gains `CLAUDE_CODE_OAUTH_TOKEN`
+  (masked, empty) and `DEFAULT_TIMEOUT_MS` (default 1800000), and its entry names now match the
+  live template, which makes diffs readable. Nothing was copied from the live file's values.
+  `OPERATIONS.md` explains the mounts, why `/host/boot` is read-write and `/host/mnt` is not,
+  and lists `/ha-config` and `/magicmirror-live` as site-specific examples that are
+  deliberately not template entries. The four persistence mappings are unchanged. Applying the
+  template is the user's step (#20).
+
 ## 0.32 (2026-10-24)
 
 - **The Go toolchain on the persisted home mount is now on PATH for non-login shells.** A
