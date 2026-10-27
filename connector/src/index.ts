@@ -1094,7 +1094,10 @@ server.on("connection", (socket: Socket) => {
 // (origin says which) without replacing the default crash. Synchronous write: the
 // process is going down straight afterwards.
 process.on("uncaughtExceptionMonitor", (err: any, origin) => {
-  logEvent("process_exception", { level: "error", origin, error: err?.name, error_code: err?.code, message: String(err?.message ?? err), stack: err?.stack });
+  // Frames only: the first line of a stack is the error message, which can quote
+  // a path, a prompt or command output.
+  const frames = String(err?.stack ?? "").split("\n").filter((l) => /^\s+at /.test(l)).join("\n");
+  logEvent("process_exception", { level: "error", origin, error: err?.name, error_code: err?.code, stack: frames });
   flushLogSync();
 });
 

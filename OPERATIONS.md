@@ -252,10 +252,10 @@ nothing per request.
   comparison; the connector does not change them.
 - **Redaction guarantee** (CLAUDE.md constraint 10). Never logged: the bearer token or any part
   of it, a *wrong* bearer a client sent, the `Authorization` or `Cookie` headers, request or
-  response bodies, tool argument values, tool output, tool error messages (a crash's `process_exception` is the one exception: capped message and stack), query strings, or a
+  response bodies, tool argument values, tool output, tool error messages (`process_exception` logs stack frames only, not the message), query strings, or a
   full session id (8-character prefix only). Events are built from an allow-list of fields, and
   `CONNECTOR_TOKEN` is additionally stripped from every serialised line as a backstop. Every
-  string is capped at 300 characters (`stack` 1500) and a line at 8KB. Tool events carry
+  string is capped at 300 characters (`stack` 1500) and a line at 8192 characters. Tool events carry
   argument key *names* only. `test/connector_log_check.py` asserts all of this against a real
   container. **Caveats:** `client_ip`, `ua`, `cf_ray` and the tool name are client-supplied
   strings (capped, not validated), and `path` is logged without its query string.

@@ -86,8 +86,7 @@ committing to a full smoke run.
     everything else the agent has, and the token is the whole security boundary (constraint 7);
     a "helpful" extra field (a header map, `req.body`, `err.message`) turns a diagnostic aid
     into a credential store. Adding a field means adding it deliberately, never spreading a request,
-    header, body or error object into `logEvent`. (`process_exception` is the one place an
-    error message is logged — capped, token-stripped, and only for a crash.) `test/connector_log_check.py` guards it; do not weaken it.
+    header, body or error object into `logEvent`. `test/connector_log_check.py` guards it; do not weaken it.
 
 ## Deploy and verify
 

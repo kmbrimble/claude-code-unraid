@@ -316,8 +316,17 @@ def mode_unwritable(token, logfile):
     d = os.path.dirname(logfile)
     http("GET", URL + "/healthz")
     wait_for(logfile, lambda e: e.get("event") == "req_end", "a first, working log line")
-    shutil.rmtree(d)
-    open(d, "w").close()  # a file where the log directory should be: mkdir and open both fail
+    # The writer is asynchronous: the previous request's conn_close can land and
+    # re-create the directory or file mid-sabotage, so retry until a plain file
+    # sits where the directory should be.
+    for _ in range(25):
+        shutil.rmtree(d, ignore_errors=True)
+        try:
+            open(d, "x").close()  # a file where the log directory should be: mkdir and open both fail
+            break
+        except OSError:
+            time.sleep(0.2)
+    need(os.path.isfile(d), "could not put a file where the log directory should be")
     slowest = 0.0
     try:
         for _ in range(15):
