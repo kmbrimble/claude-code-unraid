@@ -6,6 +6,13 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Plan (2026-10-27): structured request/connection/session logging for the connector.**
+  One JSON Lines sink (`CONNECTOR_LOG_FILE`, size-rotated), written by an async batching
+  writer that never blocks or throws into a request. Events for HTTP requests, sockets,
+  sessions, tool calls and the process, plus a 60s `stats` line. Redaction by construction
+  (an allow-list of fields, never headers/bodies/argument values). Behavioural check in
+  `test/connector_log_check.py`, wired into `test/smoke.sh`.
+
 ## 0.33 (2026-10-24)
 
 - **Repo template caught up with the live one, and documents the optional `/host` mounts.**
