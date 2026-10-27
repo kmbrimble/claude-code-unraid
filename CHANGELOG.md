@@ -13,7 +13,7 @@ is only ever advanced manually. Newest at top.
   falls back to the newest `.jsonl` in the project directory. That could be another job's
   transcript, so `progress` could show, and the idle timer be kept alive by, a different
   session's file, including in the first seconds of any job before its own transcript exists.
-  The fallback now skips files named by a different job's session id; a real fork carries an
+  The fallback now skips files named by a different *running* job's session id (finished jobs reserve nothing, so a chained `continue_session` still finds its own fork; code review); a real fork carries an
   id nobody assigned, so it is still found. Sessions started outside the connector and two
   concurrent resumes that both fork can still be ambiguous. The `mode_idle` fork check had
   failed about 1 run in 3 for this reason (OPERATIONS.md §8f, now resolved). The fake `claude`
