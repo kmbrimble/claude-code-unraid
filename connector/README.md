@@ -29,6 +29,18 @@ Jobs are killed with SIGTERM then SIGKILL after `KILL_GRACE_MS` (default 10s), o
 wall clock (`timeout_seconds` / `DEFAULT_TIMEOUT_MS`) or, if enabled, on no progress
 (`idle_timeout_seconds` / `IDLE_TIMEOUT_MS`, default 0 = off). See OPERATIONS.md §4.
 
+## Log
+
+Structured JSON Lines (requests, connections, sessions, tool calls, process health) at
+`CONNECTOR_LOG_FILE`, size-rotated. Never contains the token, headers, bodies or tool
+arguments' values. Detail, event list and `jq` recipes: OPERATIONS.md §4.
+
+| Variable | Default | |
+|---|---|---|
+| `CONNECTOR_LOG_FILE` | `/root/connector-logs/connector.jsonl` | Where it is written (directory auto-created). |
+| `CONNECTOR_LOG_MAX_BYTES` | `20971520` | Rotate when a write would pass this size. |
+| `CONNECTOR_LOG_KEEP` | `3` | Rotated files kept (`.1`, `.2`, ...). |
+
 ## Connect
 
 - Cowork / desktop: Settings → Connectors → Add custom connector →

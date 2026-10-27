@@ -9,7 +9,10 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { appendFileSync, mkdirSync, promises as fs } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import type { Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -45,6 +48,111 @@ const TAIL_BYTES = 256_000;
 const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES ?? 5_000_000);
 
 // ---------------------------------------------------------------------------
+// Structured log (JSON Lines)
+//
+// REDACTION IS THE CONTRACT (CLAUDE.md constraint 10). Events are built from an
+// allow-list of fields at each call site. Nothing here ever receives a header
+// map, a body, an argument value, tool output or a full session id, and
+// `serialise` additionally strips CONNECTOR_TOKEN from any line as a backstop.
+// A logging failure is counted, never thrown: it must not crash, block or slow
+// a request, so lines are queued and written off the request path.
+// ---------------------------------------------------------------------------
+const envInt = (name: string, def: number) => {
+  const n = Number(process.env[name]);
+  return process.env[name] !== undefined && process.env[name] !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : def;
+};
+const LOG_FILE = process.env.CONNECTOR_LOG_FILE || "/root/connector-logs/connector.jsonl";
+const LOG_MAX_BYTES = envInt("CONNECTOR_LOG_MAX_BYTES", 20 * 1024 * 1024);
+const LOG_KEEP = envInt("CONNECTOR_LOG_KEEP", 3);
+const LOG_STR_CAP = 300;
+const LOG_LINE_CAP = 8192;
+const LOG_QUEUE_CAP = 2_000_000; // bytes held while the disk is slow; beyond it lines are dropped and counted
+const LOG_RETRY_MS = 5_000;
+
+let logQueue: string[] = [];
+let logQueued = 0;
+let logFlushing = false;
+let logRetryAt = 0;
+let logSize: number | null = null; // size of the live file; null = unknown, stat before the next write
+let logErrors = 0; // cumulative lines lost, reported in `stats`
+let logLostSinceOk = 0; // reported (and reset) by `log_recovered`
+
+function serialise(event: string, fields: Record<string, unknown>): string {
+  let line = JSON.stringify(
+    { ts: new Date().toISOString(), event, ...fields },
+    (k, v) => (typeof v === "string" && v.length > (k === "stack" ? 1500 : LOG_STR_CAP) ? v.slice(0, k === "stack" ? 1500 : LOG_STR_CAP) : v),
+  );
+  if (AUTH_TOKEN.length >= 6) line = line.split(AUTH_TOKEN).join("[redacted]");
+  if (line.length > LOG_LINE_CAP) line = JSON.stringify({ ts: new Date().toISOString(), event, truncated: true });
+  return line + "\n";
+}
+
+function logEvent(event: string, fields: Record<string, unknown> = {}): void {
+  try {
+    const line = serialise(event, fields);
+    if (logQueued + line.length > LOG_QUEUE_CAP) { logErrors++; logLostSinceOk++; return; }
+    logQueue.push(line);
+    logQueued += line.length;
+    if (!logFlushing) { logFlushing = true; setImmediate(flushLog); }
+  } catch { logErrors++; }
+}
+
+async function rotateLog() {
+  if (LOG_KEEP <= 0) { await fs.rm(LOG_FILE, { force: true }); return; }
+  const missingOk = (e: any) => { if (e?.code !== "ENOENT") throw e; };
+  for (let i = LOG_KEEP - 1; i >= 1; i--) await fs.rename(`${LOG_FILE}.${i}`, `${LOG_FILE}.${i + 1}`).catch(missingOk);
+  await fs.rename(LOG_FILE, `${LOG_FILE}.1`).catch(missingOk);
+}
+
+async function writeLogBatch(batch: string) {
+  const len = Buffer.byteLength(batch);
+  await fs.mkdir(path.dirname(LOG_FILE), { recursive: true });
+  if (logSize === null) logSize = await fs.stat(LOG_FILE).then((st) => st.size, () => 0);
+  if (logSize > 0 && logSize + len > LOG_MAX_BYTES) { await rotateLog(); logSize = 0; }
+  // open/append/close per batch rather than a held descriptor: a deleted or
+  // replaced path is noticed at once instead of silently writing to a ghost.
+  await fs.appendFile(LOG_FILE, batch, { mode: 0o600 });
+  logSize += len;
+}
+
+async function flushLog() {
+  try {
+    while (logQueue.length) {
+      const batch = logQueue.join("");
+      const lines = logQueue.length;
+      logQueue = [];
+      logQueued = 0;
+      try {
+        if (Date.now() < logRetryAt) throw new Error("cooling down");
+        await writeLogBatch(batch);
+        if (logLostSinceOk > 0) { const dropped = logLostSinceOk; logLostSinceOk = 0; logEvent("log_recovered", { dropped }); }
+      } catch {
+        if (Date.now() >= logRetryAt) logRetryAt = Date.now() + LOG_RETRY_MS;
+        logSize = null;
+        logErrors += lines;
+        logLostSinceOk += lines;
+      }
+    }
+  } finally {
+    logFlushing = false;
+    if (logQueue.length) { logFlushing = true; setImmediate(flushLog); }
+  }
+}
+
+/** Synchronous drain for the paths where the process is about to die. */
+function flushLogSync() {
+  try {
+    if (!logQueue.length) return;
+    const batch = logQueue.join("");
+    logQueue = [];
+    logQueued = 0;
+    appendFileSync(LOG_FILE, batch, { mode: 0o600 });
+  } catch { logErrors++; }
+}
+
+try { mkdirSync(path.dirname(LOG_FILE), { recursive: true }); } catch { logErrors++; }
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 type Job = {
@@ -72,6 +180,11 @@ type Job = {
   signal?: string | null;
 };
 const jobs = new Map<string, Job>();
+
+/** What a running tool call has noticed, so its `tool_call_end` event can say how it ended. */
+type ToolRec = { job?: Job; clamped?: boolean };
+const toolCtx = new AsyncLocalStorage<ToolRec>();
+const noteJob = (job: Job | undefined) => { const t = toolCtx.getStore(); if (t && job) t.job = job; };
 
 function safeProjectPath(p: string): string {
   const abs = path.resolve(PROJECTS_ROOT, p);
@@ -118,6 +231,7 @@ function runProcess(
     lastActivity: Date.now(),
   };
   jobs.set(job.id, job);
+  noteJob(job);
 
   // detached: the child leads its own process group, so a kill reaches its
   // grandchildren too. Without it, killing `bash -lc` orphans the real work,
@@ -249,6 +363,8 @@ async function tailTranscript(fp: string, lastN: number) {
 function clampWait(requested: number) {
   const applied = Math.min(requested, MAX_WAIT_SECONDS);
   if (applied >= requested) return { applied, note: undefined };
+  const tool = toolCtx.getStore();
+  if (tool) tool.clamped = true;
   return {
     applied,
     note: {
@@ -373,11 +489,50 @@ function claudeArgs(o: {
 
 const text = (v: unknown) => ({ content: [{ type: "text" as const, text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }] });
 
+/**
+ * Wrap a tool handler with tool_call_start/_end events. Logs the tool name and the
+ * argument KEY names only — never values, never the result, never an error message
+ * (a path-escape error message quotes the caller's argument).
+ */
+function instrumentTool(name: string, hasArgs: boolean, handler: (...a: any[]) => any) {
+  return async (...a: any[]) => {
+    const parent = reqCtx.getStore();
+    const base = { req_id: parent?.id, session: parent?.session ?? null, tool: name };
+    const rec: ToolRec = {};
+    const t0 = performance.now();
+    let err: any;
+    let result: any;
+    logEvent("tool_call_start", {
+      ...base,
+      arg_keys: hasArgs && a[0] && typeof a[0] === "object" ? Object.keys(a[0]).slice(0, 30) : [],
+    });
+    try {
+      result = await toolCtx.run(rec, () => handler(...a));
+      return result;
+    } catch (e) {
+      err = e;
+      throw e;
+    } finally {
+      const outcome = err || result?.isError ? "error"
+        : rec.job?.status === "timeout" ? "timeout"
+        : rec.clamped ? "wait_clamped" : "ok";
+      logEvent("tool_call_end", {
+        ...base, duration_ms: Math.round(performance.now() - t0), outcome, job_id: rec.job?.id,
+        ...(err ? { error: err?.name, error_code: err?.code } : {}),
+      });
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
 // MCP server + tools
 // ---------------------------------------------------------------------------
 function buildServer(): McpServer {
   const server = new McpServer({ name: "claude-code-connector", version: "0.1.0" });
+  // Every tool goes through registerTool, so wrapping it once logs them all.
+  const register = server.registerTool.bind(server) as (name: string, cfg: any, handler: any) => unknown;
+  (server as any).registerTool = (name: string, cfg: any, handler: any) =>
+    register(name, cfg, instrumentTool(name, !!cfg?.inputSchema, handler));
 
   server.registerTool(
     "list_projects",
@@ -611,6 +766,7 @@ function buildServer(): McpServer {
     },
     async ({ job_id, wait_seconds, progress_events }) => {
       const job = jobs.get(job_id);
+      noteJob(job);
       if (!job) return text({ error: "unknown job_id" });
       const wait = clampWait(wait_seconds);
       await waitForJob(job, wait.applied * 1000);
@@ -649,6 +805,7 @@ function buildServer(): McpServer {
     },
     async ({ job_id }) => {
       const job = jobs.get(job_id);
+      noteJob(job);
       if (!job) return text({ error: "unknown job_id" });
       job.kill?.();
       return text({ job_id, status: job.status, terminating: job.terminating, grace_seconds: KILL_GRACE_MS / 1000 });
@@ -682,21 +839,137 @@ function buildServer(): McpServer {
 // ---------------------------------------------------------------------------
 // HTTP transport (Streamable HTTP, stateful sessions)
 // ---------------------------------------------------------------------------
+/** Per-request log state, kept in res.locals; read by the access-log middleware's `close` handler. */
+type ReqRec = { id: string; session: string | null; reject?: string; routed?: boolean; sessionNew?: string };
+/** Per-socket state, so keep-alive reuse and connection lifetimes are visible. */
+type Conn = { id: number; n: number; openedAt: number; timedOut?: boolean };
+const reqCtx = new AsyncLocalStorage<ReqRec>();
+const conns = new WeakMap<Socket, Conn>();
+let connSeq = 0;
+let openSockets = 0;
+const recOf = (res: express.Response) => res.locals.rec as ReqRec | undefined;
+const setReject = (res: express.Response, reason: string) => { const r = recOf(res); if (r) r.reject ??= reason; };
+const markRouted = (res: express.Response) => { const r = recOf(res); if (r) r.routed = true; };
+const sessionPrefix = (sid: string | undefined) => (sid ? sid.slice(0, 8) : null);
+
+function headerOf(req: express.Request, name: string): string | undefined {
+  const v = req.headers[name];
+  return (Array.isArray(v) ? v[0] : v) || undefined;
+}
+
+function clientIp(req: express.Request): string | null {
+  return headerOf(req, "cf-connecting-ip")
+    ?? headerOf(req, "x-forwarded-for")?.split(",")[0].trim()
+    ?? req.socket.remoteAddress
+    ?? null;
+}
+
+/** JSON-RPC method (and tool name) of a POST /mcp, from the already-parsed body. Never the params. */
+function rpcInfo(req: express.Request): { rpc_method?: string; tool?: string } {
+  const body: any = req.body;
+  const msgs: any[] = Array.isArray(body) ? body.slice(0, 5) : [body];
+  const methods = msgs.map((m) => (typeof m?.method === "string" ? m.method.slice(0, 64) : null)).filter(Boolean) as string[];
+  const call = msgs.find((m) => m?.method === "tools/call" && typeof m?.params?.name === "string");
+  return { rpc_method: methods.length ? methods.join(",") : undefined, tool: call ? String(call.params.name).slice(0, 64) : undefined };
+}
+
+/** Access log: req_start now, req_end when the response finishes OR the client goes away. */
+function accessLog(req: express.Request, res: express.Response) {
+  const t0 = performance.now();
+  const conn = conns.get(req.socket);
+  if (conn) conn.n++;
+  const sidHeader = req.header("mcp-session-id");
+  const rec: ReqRec = { id: randomUUID().slice(0, 12), session: sessionPrefix(sidHeader) };
+  res.locals.rec = rec;
+  const reqPath = req.url.split("?")[0];
+  const cl = Number(req.headers["content-length"]);
+  const info = () => ({
+    req_id: rec.id,
+    method: req.method,
+    path: reqPath,
+    session: rec.session,
+    session_known: !!sidHeader && transports.has(sidHeader),
+    client_ip: clientIp(req),
+    cf_ray: headerOf(req, "cf-ray") ?? null,
+    ua: headerOf(req, "user-agent")?.slice(0, 200) ?? null,
+    accept: headerOf(req, "accept") ?? null,
+    http_version: req.httpVersion,
+    conn_id: conn?.id,
+    conn_req_n: conn?.n,
+    bytes_in: Number.isFinite(cl) ? cl : null,
+  });
+  const started = info();
+  logEvent("req_start", started);
+
+  let bytesOut = 0;
+  let rpcErrorCode: number | undefined;
+  const count = (chunk: unknown) => {
+    if (typeof chunk === "string") bytesOut += Buffer.byteLength(chunk);
+    else if (chunk instanceof Uint8Array) bytesOut += chunk.length;
+  };
+  const origWrite = res.write as (...a: any[]) => boolean;
+  const origEnd = res.end as (...a: any[]) => express.Response;
+  (res as any).write = function (this: unknown, chunk: unknown, ...rest: any[]) {
+    try { count(chunk); } catch {}
+    return origWrite.call(this, chunk, ...rest);
+  };
+  (res as any).end = function (this: unknown, chunk: unknown, ...rest: any[]) {
+    try {
+      count(chunk);
+      // Only the numeric JSON-RPC error code of a rejection; never the message or any other body text.
+      if (res.statusCode >= 400 && typeof chunk === "string" && chunk.length < 2000) {
+        const code = JSON.parse(chunk)?.error?.code;
+        if (typeof code === "number") rpcErrorCode = code;
+      }
+    } catch {}
+    return origEnd.call(this, chunk, ...rest);
+  };
+
+  let ended = false;
+  res.on("close", () => {
+    if (ended) return;
+    ended = true;
+    try {
+      const status = res.headersSent ? res.statusCode : null;
+      let reject = rec.reject;
+      if (!reject && status !== null && status >= 400) reject = status === 404 && !rec.routed ? "no_route" : `http_${status}`;
+      logEvent("req_end", {
+        ...started,
+        ...(req.method === "POST" && reqPath === "/mcp" ? rpcInfo(req) : {}),
+        session_new: rec.sessionNew,
+        status,
+        duration_ms: Math.round((performance.now() - t0) * 10) / 10,
+        bytes_out: bytesOut,
+        aborted: !res.writableFinished,
+        reject_reason: reject,
+        rpc_error_code: rpcErrorCode,
+      });
+    } catch { logErrors++; }
+  });
+}
+
 const app = express();
+app.use((req, res, next) => {
+  try { accessLog(req, res); } catch { logErrors++; }
+  next();
+});
 app.use(express.json({ limit: "4mb" }));
 
-app.get("/healthz", (_req, res) => res.json({ ok: true, projects_root: PROJECTS_ROOT }));
+app.get("/healthz", (_req, res) => { markRouted(res); res.json({ ok: true, projects_root: PROJECTS_ROOT }); });
 
 app.use("/mcp", (req, res, next) => {
   if (!AUTH_TOKEN) return next();
   const h = req.header("authorization") ?? "";
   if (h === `Bearer ${AUTH_TOKEN}`) return next();
+  setReject(res, h ? "bad_bearer" : "missing_bearer");
   res.status(401).json({ error: "unauthorized" });
 });
 
 const transports = new Map<string, StreamableHTTPServerTransport>();
+const sessionMeta = new Map<string, { createdAt: number; requests: number; closeReason?: string }>();
 
 app.post("/mcp", async (req, res) => {
+  markRouted(res);
   const sid = req.header("mcp-session-id");
   let transport = sid ? transports.get(sid) : undefined;
 
@@ -705,33 +978,157 @@ app.post("/mcp", async (req, res) => {
       // Session id was supplied but isn't known (e.g. the connector restarted
       // and its in-memory session map was wiped). Per the MCP Streamable HTTP
       // spec, 404 tells a compliant client to re-initialise automatically.
+      setReject(res, "unknown_session");
       res.status(404).json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null });
       return;
     }
     if (!isInitializeRequest(req.body)) {
+      setReject(res, "no_session_non_initialize");
       res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad request: no valid session" }, id: null });
       return;
     }
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => { transports.set(id, transport!); },
+      onsessioninitialized: (id) => {
+        transports.set(id, transport!);
+        sessionMeta.set(id, { createdAt: Date.now(), requests: 0 });
+        const rec = recOf(res);
+        if (rec) rec.sessionNew = sessionPrefix(id) ?? undefined;
+        logEvent("session_created", {
+          session: sessionPrefix(id), req_id: rec?.id, active_sessions: transports.size,
+          client_ip: clientIp(req), cf_ray: headerOf(req, "cf-ray") ?? null,
+        });
+      },
     });
-    transport.onclose = () => { if (transport?.sessionId) transports.delete(transport.sessionId); };
+    transport.onclose = () => {
+      const id = transport?.sessionId;
+      if (!id) return;
+      transports.delete(id);
+      const meta = sessionMeta.get(id);
+      if (!meta) return;
+      sessionMeta.delete(id);
+      logEvent("session_closed", {
+        session: sessionPrefix(id), reason: meta.closeReason ?? "transport_close",
+        age_s: Math.round((Date.now() - meta.createdAt) / 1000), requests: meta.requests, active_sessions: transports.size,
+      });
+    };
     await buildServer().connect(transport);
   }
-  await transport.handleRequest(req, res, req.body);
+  if (sid) { const m = sessionMeta.get(sid); if (m) m.requests++; }
+  const rec = recOf(res);
+  await (rec ? reqCtx.run(rec, () => transport!.handleRequest(req, res, req.body)) : transport.handleRequest(req, res, req.body));
 });
 
 const handleSessionReq = async (req: express.Request, res: express.Response) => {
+  markRouted(res);
   const sid = req.header("mcp-session-id");
-  if (!sid) { res.status(400).send("Invalid or missing session ID"); return; }
+  if (!sid) { setReject(res, "missing_session_header"); res.status(400).send("Invalid or missing session ID"); return; }
   const t = transports.get(sid);
-  if (!t) { res.status(404).send("Session not found"); return; }
-  await t.handleRequest(req, res);
+  if (!t) { setReject(res, "unknown_session"); res.status(404).send("Session not found"); return; }
+  const meta = sessionMeta.get(sid);
+  if (meta) { meta.requests++; if (req.method === "DELETE") meta.closeReason = "client_delete"; }
+  const rec = recOf(res);
+  await (rec ? reqCtx.run(rec, () => t.handleRequest(req, res)) : t.handleRequest(req, res));
 };
 app.get("/mcp", handleSessionReq);
 app.delete("/mcp", handleSessionReq);
 
-app.listen(PORT, HOST, () => {
-  console.log(`claude-code-connector listening on http://${HOST}:${PORT}/mcp  (projects: ${PROJECTS_ROOT}, auth: ${AUTH_TOKEN ? "bearer" : "none"})`);
+// After the routes, so it also sees body-parser failures. Records why and hands
+// the error straight on: Express's default handler still writes the response.
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  try {
+    const type = err?.type;
+    setReject(res, type === "entity.parse.failed" ? "body_parse_failed" : type === "entity.too.large" ? "body_too_large" : "handler_error");
+    logEvent("http_error", { req_id: recOf(res)?.id, error: err?.name, error_type: type, error_code: err?.code });
+  } catch {}
+  next(err);
 });
+
+const server = app.listen(PORT, HOST, () => {
+  console.log(`claude-code-connector listening on http://${HOST}:${PORT}/mcp  (projects: ${PROJECTS_ROOT}, auth: ${AUTH_TOKEN ? "bearer" : "none"})`);
+  logEvent("server_start", {
+    pid: process.pid, node: process.version, port: PORT, host: HOST, auth: AUTH_TOKEN ? "bearer" : "none",
+    max_wait_seconds: MAX_WAIT_SECONDS, default_timeout_ms: DEFAULT_TIMEOUT_MS, idle_timeout_ms: IDLE_TIMEOUT_MS,
+    kill_grace_ms: KILL_GRACE_MS, log_file: LOG_FILE, log_max_bytes: LOG_MAX_BYTES, log_keep: LOG_KEEP,
+    // Read, never set: these are Node's own values, logged so a drop can be compared against them.
+    keep_alive_timeout_ms: server.keepAliveTimeout, headers_timeout_ms: server.headersTimeout,
+    request_timeout_ms: server.requestTimeout,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connection, process and health events
+// ---------------------------------------------------------------------------
+server.on("connection", (socket: Socket) => {
+  const conn: Conn = { id: ++connSeq, n: 0, openedAt: Date.now() };
+  conns.set(socket, conn);
+  openSockets++;
+  logEvent("conn_open", { conn_id: conn.id, remote: socket.remoteAddress ?? null, open_sockets: openSockets });
+  socket.on("error", (e: NodeJS.ErrnoException) => logEvent("socket_error", { conn_id: conn.id, code: e?.code, syscall: e?.syscall, requests: conn.n }));
+  socket.on("timeout", () => { conn.timedOut = true; logEvent("socket_timeout", { conn_id: conn.id, requests: conn.n }); });
+  socket.on("close", (hadError: boolean) => {
+    openSockets--;
+    logEvent("conn_close", {
+      conn_id: conn.id, requests: conn.n, lifetime_ms: Date.now() - conn.openedAt, had_error: hadError,
+      timed_out: !!conn.timedOut, bytes_read: socket.bytesRead, bytes_written: socket.bytesWritten, open_sockets: openSockets,
+    });
+  });
+});
+
+// Observe `clientError` without adding a listener: a listener would replace Node's
+// default handling (the 400 reply and socket destroy) and change behaviour.
+{
+  const emit = server.emit.bind(server) as (ev: string | symbol, ...a: any[]) => boolean;
+  (server as any).emit = (ev: string | symbol, ...a: any[]) => {
+    if (ev === "clientError") {
+      try {
+        const [err, socket] = a;
+        logEvent("client_error", { conn_id: conns.get(socket)?.id, code: err?.code, requests: conns.get(socket)?.n });
+      } catch {}
+    }
+    return emit(ev, ...a);
+  };
+}
+
+// `uncaughtExceptionMonitor` fires for uncaught exceptions AND unhandled rejections
+// (origin says which) without replacing the default crash. Synchronous write: the
+// process is going down straight afterwards.
+process.on("uncaughtExceptionMonitor", (err: any, origin) => {
+  logEvent("process_exception", { level: "error", origin, error: err?.name, error_code: err?.code, message: String(err?.message ?? err), stack: err?.stack });
+  flushLogSync();
+});
+
+// A SIGTERM handler would stop SIGTERM terminating the process, so log, then
+// remove the handler and re-raise: the exit is exactly what it was without one.
+const onSigterm = () => {
+  logEvent("server_stop", { signal: "SIGTERM", uptime_s: Math.round(process.uptime()), active_sessions: transports.size });
+  flushLogSync();
+  process.removeListener("SIGTERM", onSigterm);
+  process.kill(process.pid, "SIGTERM");
+};
+process.on("SIGTERM", onSigterm);
+
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
+const nsToMs = (ns: number) => Math.round(ns / 1e4) / 100;
+setInterval(() => {
+  logEvent("stats", {
+    active_sessions: transports.size,
+    open_sockets: openSockets,
+    running_jobs: [...jobs.values()].filter((j) => j.status === "running").length,
+    rss_mb: Math.round(process.memoryUsage.rss() / 1048576),
+    loop_delay_p99_ms: nsToMs(loopDelay.percentile(99)),
+    loop_delay_max_ms: nsToMs(loopDelay.max),
+    log_errors: logErrors,
+  });
+  loopDelay.reset();
+}, 60_000).unref();
+
+// A timer that fires >1s late means the loop was blocked for that long.
+let loopExpected = performance.now() + 500;
+setInterval(() => {
+  const now = performance.now();
+  const lag = now - loopExpected;
+  loopExpected = now + 500;
+  if (lag > 1000) logEvent("loop_stall", { level: "warn", lag_ms: Math.round(lag) });
+}, 500).unref();

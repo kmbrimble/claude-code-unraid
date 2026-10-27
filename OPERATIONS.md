@@ -212,6 +212,74 @@ can silently change installed tool versions if the image changed.
   | `IDLE_TIMEOUT_MS` | `0` (disabled) | **Milliseconds.** Kill a job that has made no progress for this long. Deliberately off by default so `DEFAULT_TIMEOUT_MS` keeps its 0.26 meaning. |
   | `KILL_GRACE_MS` | `10000` | **Milliseconds** between the SIGTERM and the SIGKILL. |
 
+### The connector log (0.34)
+
+Added to answer "was the connection dropped, and what were those 400s?" from the origin side,
+after intermittent `Anthropic proxy: MCP server connection lost` reports with a clean
+Cloudflare and `cloudflared` record. Before 0.34 the connector wrote one startup line and
+nothing per request.
+
+- **Where.** JSON Lines, one object per event, at `CONNECTOR_LOG_FILE` (default
+  `/root/connector-logs/connector.jsonl`, on the persisted home mount, so it survives a
+  recreate). The directory is created on start and re-created if it disappears. The file is
+  mode 0600 because it holds client IPs. The existing stdout startup line and
+  `~/claude-code-connector.log` are unchanged.
+- **Rotation.** Size-based. When the next write would take the live file past
+  `CONNECTOR_LOG_MAX_BYTES` (default 20971520) it is renamed to `.1`, `.1` to `.2`, and so on,
+  keeping `CONNECTOR_LOG_KEEP` rotated files (default 3); the oldest is overwritten. Rotation
+  is by write batch, so a file can overshoot the cap by one batch. Neither variable is in the
+  CA template and neither needs to be.
+- **Never in the request path.** Lines are queued and appended from a `setImmediate` flush; a
+  failure (unwritable path, disk full) is swallowed, the batch is dropped, and the writer backs
+  off for 5s. Drops are counted in `log_errors` on the 60s `stats` line, and the first write
+  after recovery emits `log_recovered` with `dropped`.
+- **Events.** `req_start`/`req_end` (every request, `/healthz` and 401s included, joined by
+  `req_id`; `rpc_method`, `tool`, `status` and `reject_reason` are on `req_end`), `conn_open`/
+  `conn_close`, `socket_error`, `socket_timeout`, `client_error`, `session_created`/
+  `session_closed`, `tool_call_start`/`tool_call_end` (`outcome` is `ok`, `error`,
+  `wait_clamped` or `timeout`), `http_error`, `server_start`, `server_stop`,
+  `process_exception`, `loop_stall`, `log_recovered` and `stats`.
+- **`reject_reason` codes** (stable): `bad_bearer`, `missing_bearer`, `no_session_non_initialize`,
+  `unknown_session`, `missing_session_header`, `body_parse_failed`, `body_too_large`,
+  `handler_error`, `no_route`, and `http_<status>` for anything the MCP transport itself
+  refused (with its numeric JSON-RPC code in `rpc_error_code`).
+- **`aborted: true`** on `req_end` means the response closed before it finished: the client (or
+  something between) went away mid-call. `duration_ms` and `bytes_out` are what had happened by
+  then. A GET `/mcp` SSE stream logs `req_start` at once and `req_end` when it closes.
+- **`conn_req_n`** is the nth request on that socket. Values above 1 are keep-alive reuse; a
+  `conn_close` with few requests and a long `lifetime_ms` is an idle connection reaped.
+  `server_start` records Node's `keepAliveTimeout`/`headersTimeout`/`requestTimeout` for
+  comparison; the connector does not change them.
+- **Redaction guarantee** (CLAUDE.md constraint 10). Never logged: the bearer token or any part
+  of it, a *wrong* bearer a client sent, the `Authorization` or `Cookie` headers, request or
+  response bodies, tool argument values, tool output, tool error messages (a crash's `process_exception` is the one exception: capped message and stack), query strings, or a
+  full session id (8-character prefix only). Events are built from an allow-list of fields, and
+  `CONNECTOR_TOKEN` is additionally stripped from every serialised line as a backstop. Every
+  string is capped at 300 characters (`stack` 1500) and a line at 8KB. Tool events carry
+  argument key *names* only. `test/connector_log_check.py` asserts all of this against a real
+  container. **Caveats:** `client_ip`, `ua`, `cf_ray` and the tool name are client-supplied
+  strings (capped, not validated), and `path` is logged without its query string.
+- **Not logged: when a session goes quiet.** Sessions live until a DELETE or a restart, so
+  `active_sessions` only ever grows between restarts; `session_closed` is rare.
+
+Useful `jq` one-liners (`L=/root/connector-logs/connector.jsonl`; add `$L.1 $L.2 $L.3` for history):
+
+```
+# every aborted request (client went away mid-call)
+jq -c 'select(.event=="req_end" and .aborted==true)' $L
+# 4xx counts by reject_reason per hour
+jq -r 'select(.event=="req_end" and .status>=400) | [.ts[:13], .reject_reason] | @tsv' $L | sort | uniq -c
+# everything about one request, then everything on its socket
+jq -c 'select(.req_id=="REQ_ID")' $L
+jq -c 'select(.conn_id==CONN_ID)' $L
+# join with Cloudflare: find the origin's view of one Ray ID (the 16 hex chars before the colo suffix)
+jq -c 'select(.cf_ray!=null and (.cf_ray|startswith("RAYID")))' $L
+# sockets that died with an error, and event-loop stalls
+jq -c 'select(.event=="socket_error" or .event=="client_error" or .event=="loop_stall")' $L
+# slowest tool calls
+jq -r 'select(.event=="tool_call_end") | [.duration_ms, .tool, .outcome, .job_id] | @tsv' $L | sort -rn | head
+```
+
 ## 4a. PAL MCP server (code-review advisor)
 
 - Baked at `/opt/pal-mcp` (not `/root` — shadowed by the persisted home mount, same reasoning

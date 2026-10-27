@@ -52,7 +52,7 @@ cleanup() {
   local suffix dir
   # Sub-test containers too: a check that dies mid-way leaves its container
   # running with its home still mounted.
-  for suffix in "" -timeout -idle -collector -notoken; do
+  for suffix in "" -timeout -idle -log -logrot -collector -notoken; do
     docker rm -f "${NAME}${suffix}" >/dev/null 2>&1
   done
   # Before the rmi: remove_home needs the image to reach the daemon's side.
@@ -646,6 +646,48 @@ check "connector's IDLE_TIMEOUT_MS kills a stalled job and spares a slow but tra
 docker rm -f "$IDLE_NAME" >/dev/null 2>&1
 remove_home "$IDLE_HOME"
 rm -f "$FAKE_CLAUDE"
+
+# Structured connector log (0.34): JSON Lines of every request, connection,
+# session and tool call, written to ~/connector-logs/connector.jsonl, so a
+# dropped connection can be diagnosed from the origin. The checker reads the
+# file back inside the container and asserts on what is in it AND on what must
+# not be: the bearer token, a wrong bearer, query strings, argument values and
+# full session ids. MAX_WAIT_SECONDS is low so the wait_clamped outcome is quick.
+LOG_NAME="${NAME}-log"
+LOG_TOKEN="smoketest-log-token"
+new_home LOG_HOME
+docker run -d --name "$LOG_NAME" -v "$LOG_HOME:/root" \
+  -e CONNECTOR_TOKEN="$LOG_TOKEN" -e MAX_WAIT_SECONDS=5 "$TAG" >/dev/null 2>&1
+sleep 3
+for _ in $(seq 30); do
+  docker exec "$LOG_NAME" curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1 && break
+  sleep 1
+done
+docker cp "$REPO_ROOT/test/connector_log_check.py" "$LOG_NAME:/tmp/connector_log_check.py" >/dev/null 2>&1
+check "connector log: events, reject reasons, tool outcomes, aborted calls, SSE, and redaction of tokens/queries/arguments/session ids" \
+  docker exec "$LOG_NAME" python3 /tmp/connector_log_check.py \
+    --mode=main "$LOG_TOKEN" /root/connector-logs/connector.jsonl
+check "connector log: an unwritable log path never breaks a request, and the log resumes and counts what it dropped" \
+  docker exec "$LOG_NAME" python3 /tmp/connector_log_check.py \
+    --mode=unwritable "$LOG_TOKEN" /root/connector-logs/connector.jsonl
+docker rm -f "$LOG_NAME" >/dev/null 2>&1
+remove_home "$LOG_HOME"
+
+LOGROT_NAME="${NAME}-logrot"
+new_home LOGROT_HOME
+docker run -d --name "$LOGROT_NAME" -v "$LOGROT_HOME:/root" \
+  -e CONNECTOR_TOKEN="$LOG_TOKEN" -e CONNECTOR_LOG_MAX_BYTES=4000 -e CONNECTOR_LOG_KEEP=2 "$TAG" >/dev/null 2>&1
+sleep 3
+for _ in $(seq 30); do
+  docker exec "$LOGROT_NAME" curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1 && break
+  sleep 1
+done
+docker cp "$REPO_ROOT/test/connector_log_check.py" "$LOGROT_NAME:/tmp/connector_log_check.py" >/dev/null 2>&1
+check "connector log: size-rotates at CONNECTOR_LOG_MAX_BYTES and keeps exactly CONNECTOR_LOG_KEEP files" \
+  docker exec "$LOGROT_NAME" python3 /tmp/connector_log_check.py \
+    --mode=rotate "$LOG_TOKEN" /root/connector-logs/connector.jsonl 2 4000
+docker rm -f "$LOGROT_NAME" >/dev/null 2>&1
+remove_home "$LOGROT_HOME"
 
 # claude-usage-collector: an OPTIONAL service for the macOS usage widget
 # (github.com/kmbrimble/claude-usage-widget). Its binary is deliberately not

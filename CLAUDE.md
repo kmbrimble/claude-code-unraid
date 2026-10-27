@@ -76,6 +76,18 @@ committing to a full smoke run.
      timer fires rather than when the process exits makes the SIGTERM-then-SIGKILL escalation
      unobservable.
    `test/smoke.sh` and `test/connector_timeout_check.py` guard all three; do not weaken them.
+10. **The connector log must never contain the bearer token, the `Authorization` header,
+    request or response bodies, tool arguments (values), tool output or full session ids.**
+    Added in 0.34. Implemented in `connector/src/index.ts` (the "Structured log" block, the
+    `accessLog` middleware and `instrumentTool`): every event is built from an allow-list of
+    fields, tool events carry argument *key names* only, session ids are an 8-character prefix,
+    query strings are dropped, tool error messages are not logged, and `CONNECTOR_TOKEN` is
+    stripped from each line as a backstop. Why: the log sits on the persisted home mount next to
+    everything else the agent has, and the token is the whole security boundary (constraint 7);
+    a "helpful" extra field (a header map, `req.body`, `err.message`) turns a diagnostic aid
+    into a credential store. Adding a field means adding it deliberately, never spreading a request,
+    header, body or error object into `logEvent`. (`process_exception` is the one place an
+    error message is logged — capped, token-stripped, and only for a crash.) `test/connector_log_check.py` guards it; do not weaken it.
 
 ## Deploy and verify
 

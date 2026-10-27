@@ -223,7 +223,9 @@ def mode_main(token, logfile):
     valmark = "VALMARKER" + uuid.uuid4().hex[:8]
     rpc(token, sid, "tools/call", {"name": "get_job", "arguments": {"job_id": valmark, "progress_events": 2}}, id_=3)
     ts = wait_for(logfile, lambda e: e.get("event") == "tool_call_start" and e.get("tool") == "get_job", "tool_call_start get_job")
-    need(sorted(ts.get("arg_keys", [])) == ["job_id", "progress_events"], f"arg_keys wrong: {ts}")
+    # Schema defaults (wait_seconds) are keys too once zod has parsed the call.
+    need({"job_id", "progress_events"} <= set(ts.get("arg_keys", [])) <= {"job_id", "progress_events", "wait_seconds"},
+         f"arg_keys should be the schema's key names: {ts}")
     wait_for(logfile, lambda e: e.get("event") == "tool_call_end" and e.get("tool") == "get_job", "tool_call_end get_job")
     rpc(token, sid, "tools/call", {"name": "list_jobs", "arguments": {}}, id_=4)
     te = wait_for(logfile, lambda e: e.get("event") == "tool_call_end" and e.get("tool") == "list_jobs", "tool_call_end list_jobs")
@@ -244,7 +246,9 @@ def mode_main(token, logfile):
     rpc(token, sid, "tools/call", {"name": "run_command", "arguments": {
         "project": "smoketest-log", "command": "sleep 30", "idle_timeout_seconds": 1, "wait_seconds": 5}}, id_=7)
     wait_for(logfile, lambda e: e.get("event") == "tool_call_end" and e.get("outcome") == "timeout", "outcome timeout")
-    rpc(token, sid, "tools/call", {"name": "read_file", "arguments": {"path": "../../etc/passwd"}}, id_=8)
+    # The path-escape error quotes the caller's path; the log must not.
+    pathmark = "PATHMARKER" + uuid.uuid4().hex[:8]
+    rpc(token, sid, "tools/call", {"name": "read_file", "arguments": {"path": "../../" + pathmark}}, id_=8)
     wait_for(logfile, lambda e: e.get("event") == "tool_call_end" and e.get("tool") == "read_file"
              and e.get("outcome") == "error", "outcome error")
 
@@ -278,7 +282,7 @@ def mode_main(token, logfile):
     time.sleep(0.5)
     text = raw_log(logfile)
     for what, needle in (("the real CONNECTOR_TOKEN", token), ("a wrong bearer token", wrong),
-                         ("a query string", marker), ("a tool argument value", valmark),
+                         ("a query string", marker), ("a tool argument value", valmark), ("an error message quoting an argument", pathmark),
                          ("a full session id", sid), ("a Bearer header", "Bearer "),
                          ("an Authorization header", "authorization"), ("a request body", "jsonrpc"),
                          ("a malformed request body", "not json")):
