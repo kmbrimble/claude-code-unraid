@@ -6,6 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.34 (2026-10-27)
+
 - **The connector now keeps a structured, redacted log of every request, connection, session and tool call.**
   Added after intermittent `Anthropic proxy: MCP server connection lost` reports for which
   Cloudflare and `cloudflared` showed nothing wrong but ~6% of requests were HTTP 400: until now
