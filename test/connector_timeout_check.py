@@ -264,11 +264,16 @@ def mode_idle(token, idle_s):
 
     # A shell job has no transcript of its own, so it must be judged on its
     # output alone: a concurrent Claude session writing in the same project
-    # directory must not keep a stalled run_command alive.
-    call(token, sid, "tools/call", {
+    # directory must not keep a stalled run_command alive. This sibling is
+    # deliberately left running into the fork subtest below, and beats faster
+    # than any other session here so it is always the newest file in the
+    # directory: the realistic condition under which the fork's transcript
+    # must still be picked out from another job's.
+    _, resp_sib = call(token, sid, "tools/call", {
         "name": "start_session",
-        "arguments": {"project": "smoketest-idle", "prompt": "ACTIVE=1 SLEEP=25", "wait_seconds": 0},
+        "arguments": {"project": "smoketest-idle", "prompt": "ACTIVE=1 BEAT_MS=50 SLEEP=25", "wait_seconds": 0},
     }, id_=5, timeout=30)
+    sibling = tool_result(resp_sib)
     _, resp3 = call(token, sid, "tools/call", {
         "name": "run_command",
         "arguments": {"project": "smoketest-idle", "command": "sleep 25", "wait_seconds": 20},
@@ -282,7 +287,8 @@ def mode_idle(token, idle_s):
 
     # A resumed session can fork to a new id, leaving the file named by the
     # session id present but no longer written to. Progress and liveness must
-    # follow the file that is actually growing, or a live job looks dead.
+    # follow the file that is actually growing, or a live job looks dead — and
+    # not the file of the sibling session above, which is also growing, faster.
     call(token, sid, "tools/call", {
         "name": "run_command",
         "arguments": {
@@ -303,7 +309,8 @@ def mode_idle(token, idle_s):
         sys.exit(f"FAIL: a resumed session that forked its transcript id was not seen as alive: {forked}")
     tpath = (forked.get("progress") or {}).get("transcript_path", "")
     if not tpath.endswith("forked-parent-fork.jsonl"):
-        sys.exit(f"FAIL: progress followed the stale session-id file instead of the one being written: {forked}")
+        sys.exit(f"FAIL: progress followed the stale session-id file instead of the one being written "
+                 f"(sibling session {sibling.get('session_id')} is still live): {forked}")
 
     print("OK: stalled job killed by idle timer", stalled["timeout"],
           "; transcript-active job survived", active["elapsed_seconds"], "s")

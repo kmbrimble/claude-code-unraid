@@ -305,8 +305,12 @@ function runProcess(
  * be recorded under a forked id. The fallback ignores files untouched since
  * the job started, so an unrelated older session is never mistaken for this
  * job's progress — or for it still being alive.
- * ponytail: two concurrent jobs in one project can still cross-feed liveness
- * through the fallback; per-job id tracking if that ever matters.
+ * Files named by a different job's session id are skipped in the fallback: they
+ * belong to that job and are never this job's fork. A real fork carries an id
+ * nobody assigned, so it is still found.
+ * ponytail: sessions started outside the connector in the same project, and two
+ * concurrent resumes that both fork, can still be ambiguous; per-job fork
+ * tracking if that ever matters.
  */
 async function sessionLogPath(job: Job): Promise<string | null> {
   const dir = path.join(CLAUDE_HOME, "projects", encodeProjectDir(job.cwd));
@@ -317,9 +321,11 @@ async function sessionLogPath(job: Job): Promise<string | null> {
   const preferred = job.sessionId ? path.join(dir, `${job.sessionId}.jsonl`) : null;
   const preferredStat = preferred ? await fs.stat(preferred).catch(() => null) : null;
   if (preferredStat && preferredStat.mtimeMs >= startedMs) return preferred;
+  const claimed = new Set<string>();
+  for (const j of jobs.values()) if (j !== job && j.sessionId) claimed.add(`${j.sessionId}.jsonl`);
   let best: { p: string; m: number } | null = null;
   for (const f of await fs.readdir(dir).catch(() => [] as string[])) {
-    if (!f.endsWith(".jsonl")) continue;
+    if (!f.endsWith(".jsonl") || claimed.has(f)) continue;
     const p = path.join(dir, f);
     const st = await fs.stat(p).catch(() => null);
     if (!st || st.mtimeMs < startedMs) continue;

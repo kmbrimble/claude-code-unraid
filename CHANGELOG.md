@@ -6,6 +6,22 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+## 0.35 (2026-10-27)
+
+- **Fixed the connector's transcript cross-feed, and the flaky idle-timeout smoke check it caused.**
+  When a job's named session file is stale (a resume that forked its id), `sessionLogPath()`
+  falls back to the newest `.jsonl` in the project directory. That could be another job's
+  transcript, so `progress` could show, and the idle timer be kept alive by, a different
+  session's file, including in the first seconds of any job before its own transcript exists.
+  The fallback now skips files named by a different job's session id; a real fork carries an
+  id nobody assigned, so it is still found. Sessions started outside the connector and two
+  concurrent resumes that both fork can still be ambiguous. The `mode_idle` fork check had
+  failed about 1 run in 3 for this reason (OPERATIONS.md §8f, now resolved). The fake `claude`
+  stub gains `BEAT_MS=N` (default 250, so existing checks are unchanged), and the check now
+  keeps a fast-beating sibling live through the fork subtest and asserts the fork's own
+  transcript is returned: 26/26 failures on the unmodified connector, 26/26 passes with the
+  fix. Takes effect on the next image rebuild and container recreate.
+
 ## 0.34 (2026-10-27)
 
 - **The connector now keeps a structured, redacted log of every request, connection, session and tool call.**

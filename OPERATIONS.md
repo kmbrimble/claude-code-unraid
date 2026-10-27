@@ -664,23 +664,18 @@ e. **Whether `hass --script check_config -c <copy of /config>` catches the `temp
    requirements may make it impractical. Not attempted in the #18 change; treat as a candidate
    for its own follow-up.
 
-f. **`test/connector_timeout_check.py`'s `mode_idle` forked-session check is intermittently
-   flaky for a different reason than its neighbouring comment documents** (found investigating
-   #18's smoke run, 16 Sep 2026). The comment above the fake-claude stub's `ACTIVE=1` branch
-   attributes flakiness to a 0.25s heartbeat against a 2s idle timer leaving only 1s of slack
-   under host load. That mechanism is real, but a *separate* failure was also observed: the
-   "progress followed the stale session-id file instead of the one being written" assertion
-   (checking that a resumed session which forks to a new transcript id is tracked via the file
-   actually being written, not the stale one named by the original session id) fails
-   intermittently — roughly 1-in-3 in a small sample — with `transcript_path` pointing at a
-   random UUID-named file that matches neither the expected `forked-parent-fork.jsonl` nor the
-   stale `forked-parent.jsonl`. **Reproduced against an unmodified pre-#18 build** in isolated,
-   single-container, single-invocation runs (no concurrent load from this or other test
-   stages), so it is pre-existing in `connector/src/index.ts`'s session-transcript-following
-   logic, not something #18 introduced or made worse. Root cause not investigated further —
-   candidate for its own `/feature` run, starting from `mode_idle` in
-   `test/connector_timeout_check.py` and the `continue_session`/progress-tail code around the
-   `encodeProjectDir`/transcript-selection logic in `connector/src/index.ts`.
+f. **Resolved in 0.35: the `mode_idle` forked-session flake was a transcript cross-feed.**
+   The "progress followed the stale session-id file instead of the one being written" check
+   failed about 1 run in 3. The shell-job subtest leaves a background session in the same
+   project running into the fork subtest, and `sessionLogPath()`'s fallback (taken when the
+   named file is stale) picked the newest `.jsonl` in the project directory by mtime. Two live
+   files then competed and the winner was a race decided by when the result was built; the
+   followed path was always the sibling job's own session file (the heartbeat slack in the
+   stub's comment is a separate, already-fixed mechanism). The fallback now skips files named
+   by a *different* job's session id. The test keeps the sibling running, on a fast
+   `BEAT_MS=50` heartbeat so it is always the newest file: 26/26 failures before, 26/26
+   passes after. **Remaining limits:** sessions started outside the connector in the same
+   project, and two concurrent resumes that both fork, can still be ambiguous.
 
 ## 9. Scope reminder
 

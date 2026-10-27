@@ -542,7 +542,9 @@ MAX_WAIT=8
 # The fake `claude`, shared by both containers. Modes are named by tokens in
 # the prompt (its last argument):
 #   SLEEP=N     how long the "session" runs
-#   ACTIVE=1    append a transcript line every second (a slow but live job)
+#   ACTIVE=1    append a transcript line every BEAT_MS (a slow but live job)
+#   BEAT_MS=N   heartbeat for ACTIVE=1, default 250; a small value makes this
+#               session reliably the most recently written file in its project
 #   TRAP_TERM=1 ignore SIGTERM, so only the SIGKILL escalation can end it
 #   BIGLOG=1    leave a >512MB sparse transcript, which a whole-file utf8 read
 #               cannot even hold in a JS string — so a passing progress check
@@ -588,7 +590,10 @@ if [[ "$prompt" == *TRAP_TERM=1* ]]; then
 elif [[ "$prompt" == *ACTIVE=1* ]]; then
   # Heartbeat well inside the idle timeout the tests use: a 1s beat against a
   # 2s timer left only 1s of slack and flaked on a loaded host.
-  for ((i = 0; i < secs * 4; i++)); do sleep 0.25; event "working $i"; done
+  beat=250
+  [[ "$prompt" =~ BEAT_MS=([0-9]+) ]] && beat="${BASH_REMATCH[1]}"
+  nap="$(awk -v b="$beat" 'BEGIN { printf "%.3f", b / 1000 }')"
+  for ((i = 0; i < secs * 1000 / beat; i++)); do sleep "$nap"; event "working $i"; done
 else
   sleep "$secs"
 fi
