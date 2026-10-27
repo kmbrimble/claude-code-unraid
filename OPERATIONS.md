@@ -672,10 +672,11 @@ f. **Resolved in 0.35: the `mode_idle` forked-session flake was a transcript cro
    files then competed and the winner was a race decided by when the result was built; the
    followed path was always the sibling job's own session file (the heartbeat slack in the
    stub's comment is a separate, already-fixed mechanism). The fallback now skips files named
-   by a *different* job's session id. The test keeps the sibling running, on a fast
+   by a *different running* job's session id. The test keeps the sibling running, on a fast
    `BEAT_MS=50` heartbeat so it is always the newest file: 26/26 failures before, 26/26
    passes after. **Remaining limits:** sessions started outside the connector in the same
-   project, and two concurrent resumes that both fork, can still be ambiguous.
+   project, and two concurrent resumes that both fork, can still be ambiguous, and a sibling that finishes mid-job releases its file
+   (harmless for liveness, a transient in `progress`).
 
 ## 9. Scope reminder
 
