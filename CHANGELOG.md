@@ -6,12 +6,31 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- **Plan (2026-10-27): structured request/connection/session logging for the connector.**
-  One JSON Lines sink (`CONNECTOR_LOG_FILE`, size-rotated), written by an async batching
-  writer that never blocks or throws into a request. Events for HTTP requests, sockets,
-  sessions, tool calls and the process, plus a 60s `stats` line. Redaction by construction
-  (an allow-list of fields, never headers/bodies/argument values). Behavioural check in
-  `test/connector_log_check.py`, wired into `test/smoke.sh`.
+- **The connector now keeps a structured, redacted log of every request, connection, session and tool call.**
+  Added after intermittent `Anthropic proxy: MCP server connection lost` reports for which
+  Cloudflare and `cloudflared` showed nothing wrong but ~6% of requests were HTTP 400: until now
+  the origin logged one startup line and could neither confirm a dropped connection nor say what
+  the 400s were. JSON Lines at `CONNECTOR_LOG_FILE` (default
+  `/root/connector-logs/connector.jsonl`, on the persisted home mount), size-rotated by
+  `CONNECTOR_LOG_MAX_BYTES` (20 MiB) and `CONNECTOR_LOG_KEEP` (3); no template change needed.
+  Events: `req_start`/`req_end` (with `req_id`, `rpc_method`, `tool`, `status`, a stable
+  `reject_reason`, `client_ip`, `cf_ray`, `conn_id`/`conn_req_n` for keep-alive reuse, and
+  `aborted: true` when the client went away mid-call), `conn_open`/`conn_close`, `socket_error`,
+  `socket_timeout`, `client_error`, `session_created`/`session_closed`, `tool_call_start`/`_end`
+  (outcome `ok`/`error`/`wait_clamped`/`timeout`), `http_error`, `server_start` (including Node's
+  keep-alive/headers/request timeouts, read but not changed), `server_stop`, `process_exception`,
+  `loop_stall`, `log_recovered`, and a 60s `stats` line. Writes are queued and appended off the
+  request path; a failure is swallowed and counted. **Redaction is a contract (new CLAUDE.md
+  constraint 10):** no token, wrong bearer, `Authorization`/`Cookie`, body, argument value, tool
+  output, tool error message, query string or full session id is ever logged; events are built
+  from an allow-list and `CONNECTOR_TOKEN` is stripped from each line as a backstop. Behaviour
+  is unchanged: `uncaughtExceptionMonitor` and a re-raised SIGTERM observe crashes and stops
+  without altering them, and `clientError` is observed by wrapping `emit` so Node's default 400
+  reply stays. `process_exception` logs stack frames only, not the message (code review).
+  `test/connector_log_check.py`, wired into `test/smoke.sh`, drives a real endpoint through
+  every event, reject reason, an aborted call, an SSE stream, rotation, an unwritable path and
+  the redaction sweep. OPERATIONS.md §4 documents the fields and `jq` recipes. Takes effect on
+  the next image rebuild and container recreate.
 
 ## 0.33 (2026-10-24)
 
