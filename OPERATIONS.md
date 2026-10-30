@@ -129,8 +129,21 @@ can silently change installed tool versions if the image changed.
 ## 4. The MCP connector (`connector/`)
 
 - Node/Express service in `connector/src/index.ts`, built into `/opt/claude-code-connector`,
-  started by `entrypoint.sh` on port 8765 **only if `CONNECTOR_TOKEN` is set** (bearer-token
-  auth is the entire security boundary — see CLAUDE.md's non-negotiable constraint #7).
+  started by `entrypoint.sh` on port 8765 **only with a complete auth config for its
+  `AUTH_MODE`** (credential check is the entire security boundary — see CLAUDE.md's
+  non-negotiable constraint #7). `bearer` (default) needs `CONNECTOR_TOKEN`; `access` needs
+  `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ACCESS_ALLOWED_EMAILS` (and the entrypoint withholds
+  `CONNECTOR_TOKEN` from the process); `both` needs all four. Anything less logs a skip. The
+  connector also fails closed on its own (0.38): non-empty `ACCESS_ALLOWED_EMAILS` is mandatory
+  in `access`/`both`, and `bearer` with no token exits unless `HOST` is loopback. A JWT with no
+  `email` claim is always rejected.
+- **Single-owner by design (0.38 note).** Sessions and jobs are not bound to the identity that
+  created them: any caller who passes auth can use any live session id or job id, and there is no
+  `Origin` or `Host` check. That is acceptable only while the allow-list holds one principal (the
+  owner). If a second principal is ever allowed, bind sessions/jobs to the authenticated identity
+  and add `Origin`/`Host` validation first. For the same reason an Access OAuth grant is a
+  long-lived root credential: watch `auth_client` in the log (see below) for a client you did not
+  register.
 - Its `run_command` tool is an arbitrary shell running as root inside a container that holds
   the Docker socket — this is effectively root on the unRAID box. Treat any credential that
   reaches this connector as a full host compromise if leaked.
@@ -255,7 +268,12 @@ nothing per request.
   `session_closed`, `tool_call_start`/`tool_call_end` (`outcome` is `ok`, `error`,
   `wait_clamped` or `timeout`), `http_error`, `server_start`, `server_stop`,
   `process_exception`, `loop_stall`, `log_recovered` and `stats`.
-- **`reject_reason` codes** (stable): `bad_bearer`, `missing_bearer`, `no_session_non_initialize`,
+- **Access identity fields (0.38).** On an accepted Access JWT, `req_end` carries `auth_email`
+  and `auth_client`: the `azp` claim, else `client_id`, else `sub:` + the first 8 characters of
+  `sub`. Both are deliberate and non-secret; the token, signature and payload are never logged.
+  A new `auth_client` value for the owner means a second OAuth client exists.
+- **`reject_reason` codes** (stable): `access_no_email` (JWT without an email claim),
+  `access_email_denied`, `access_jwt:<jose code>`, `missing_access_jwt`, `bad_bearer`, `missing_bearer`, `no_session_non_initialize`,
   `unknown_session`, `missing_session_header`, `body_parse_failed`, `body_too_large`,
   `handler_error`, `no_route`, and `http_<status>` for anything the MCP transport itself
   refused (with its numeric JSON-RPC code in `rpc_error_code`).

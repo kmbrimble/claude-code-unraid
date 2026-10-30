@@ -51,8 +51,14 @@ committing to a full smoke run.
    smoke test guards this.
 6. **Do not remove or relax the permission deny list** in `~/.claude/settings.json` behaviour
    assumptions. Note that file lives in the persisted home mapping, not the image.
-7. **The MCP connector (`connector/`, port 8765) must only start when `CONNECTOR_TOKEN` is
-   set.** Its `run_command` tool is arbitrary shell in a container holding the Docker socket.
+7. **The MCP connector (`connector/`, port 8765) must only start when a COMPLETE auth config
+   is present: no complete auth config = no connector.** Complete means, by `AUTH_MODE`
+   (default `bearer`): `bearer` → `CONNECTOR_TOKEN`; `access` → `ACCESS_TEAM_DOMAIN` +
+   `ACCESS_AUD` + `ACCESS_ALLOWED_EMAILS`; `both` → all of those. Otherwise the entrypoint logs a
+   skip and does not start it. In `access` mode the entrypoint withholds `CONNECTOR_TOKEN` from
+   the connector's environment (`env -u`). The connector itself also refuses to start with an
+   empty allow-list in `access`/`both`, or with no token in `bearer` unless `HOST` is loopback.
+   Its `run_command` tool is arbitrary shell in a container holding the Docker socket.
    The smoke test guards this; do not weaken it.
 8. **The `claude-usage-collector` block in `entrypoint.sh` must never make startup depend on
    the collector.** The binary is not in this image — it is dropped onto the persisted home
@@ -87,6 +93,11 @@ committing to a full smoke run.
     a "helpful" extra field (a header map, `req.body`, `err.message`) turns a diagnostic aid
     into a credential store. Adding a field means adding it deliberately, never spreading a request,
     header, body or error object into `logEvent`. `test/connector_log_check.py` guards it; do not weaken it.
+    Two non-secret identity fields are deliberately logged in the 0600 log (0.38):
+    `auth_email` (the Access-authenticated, allow-listed owner email) and `auth_client` (the JWT's
+    `azp`/`client_id`, else `sub:` plus an 8-character `sub` prefix), so a second OAuth client
+    for the owner is visible. They are the only identity fields; never the JWT, its signature or
+    its payload. `test/connector_access_check.mjs` guards this.
 
 ## Deploy and verify
 

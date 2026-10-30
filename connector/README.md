@@ -5,7 +5,7 @@ desktop app / another Claude Code drive the `claude` CLI inside this container: 
 projects and sessions, start or resume sessions, run shell commands, poll long jobs.
 
 Built in the `Dockerfile` into `/opt/claude-code-connector`; started by `entrypoint.sh` on
-port 8765 **only when `CONNECTOR_TOKEN` is set** (unRAID template variable). Log:
+port 8765 **only with a complete auth config for its `AUTH_MODE`** (default `bearer`: `CONNECTOR_TOKEN`; `access`/`both` also need `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `ACCESS_ALLOWED_EMAILS`; see OPERATIONS.md §4). Log:
 `~/claude-code-connector.log`.
 
 ## Tools
