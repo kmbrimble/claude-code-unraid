@@ -257,6 +257,33 @@ can silently change installed tool versions if the image changed.
   | `IDLE_TIMEOUT_MS` | `0` (disabled) | **Milliseconds.** Kill a job that has made no progress for this long. Deliberately off by default so `DEFAULT_TIMEOUT_MS` keeps its 0.26 meaning. |
   | `KILL_GRACE_MS` | `10000` | **Milliseconds** between the SIGTERM and the SIGKILL. |
 
+#### Resource limits and numeric env parsing (0.38)
+
+Every numeric knob (`PORT`, `DEFAULT_TIMEOUT_MS`, `MAX_WAIT_SECONDS`, `IDLE_TIMEOUT_MS`, `KILL_GRACE_MS`,
+`OUTPUT_CAP_BYTES`, `MAX_IMAGE_BYTES`, `JOB_RETENTION_MS`, `MAX_FINISHED_JOBS`, the log knobs and the
+variables below) goes through one strict parser: unset or empty means the default, anything else must be a
+plain decimal integer in range or the connector **refuses to start** and names the variable. Minimum is 1
+except where 0 is meaningful (`IDLE_TIMEOUT_MS` = off, `MAX_FINISHED_JOBS`, the log knobs); maximum is
+2147483647, the largest `setTimeout` delay, because a larger value fires immediately. Previously
+`DEFAULT_TIMEOUT_MS=abc` became `NaN`, which silently disabled the timer's comparisons. No default and no
+role from the table above changed.
+
+`OUTPUT_CAP_BYTES` is enforced in **characters** (UTF-16 code units of the decoded stream), not bytes; the
+name is historical and the result field is `stdout_truncated_chars`. For ASCII output they coincide; for
+multi-byte output the heap bound is up to ~2x (UTF-16) the figure.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MAX_RUNNING_JOBS` | `16` | Concurrent *running* jobs across all sessions. Over it, `run_command`, `start_session` and `continue_session` return a "Capacity exceeded" tool error (log event `job_cap_hit`) instead of spawning. |
+| `MAX_SESSIONS` | `64` | Open MCP sessions. At the cap a new `initialize` first evicts the longest-idle session that is not busy (`session_closed` reason `evicted_cap`); only if every session is busy is it refused with HTTP 503 (`session_cap`). Either way `session_cap_hit` is logged. |
+| `SESSION_IDLE_MS` | `86400000` (24 h) | A session untouched this long is closed (`session_closed` reason `idle_expired`); the client sees a 404 and re-initialises. |
+| `MAX_READ_BYTES` | `1000000` | Hard ceiling on `read_file` text reads: `max_bytes` above it is rejected by the schema and clamped at runtime. Images keep their own `MAX_IMAGE_BYTES` cap. |
+
+A session is *busy*, and never expired or evicted, while it has a request or SSE stream open, or a running
+job it started. `get_session_transcript` reads only the last 256 KB of the file (so a very long session may
+return fewer than `last_n` messages) and `list_sessions` reads only the first 64 KB of each transcript.
+These caps are separate from, and do not touch, the timeout knobs in the table above.
+
 ### The connector log (0.34)
 
 Added to answer "was the connection dropped, and what were those 400s?" from the origin side,
