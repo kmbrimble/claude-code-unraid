@@ -285,7 +285,7 @@ def mode_idle(token, idle_s):
             f"session wrote transcripts in the same project: {shell_job}"
         )
 
-    # A resumed session can fork to a new id, leaving the file named by the
+    # A resumed session can fork to a new id (session ids must be UUIDs since 0.38), leaving the file named by the
     # session id present but no longer written to. Progress and liveness must
     # follow the file that is actually growing, or a live job looks dead — and
     # not the file of the sibling session above, which is also growing, faster.
@@ -293,14 +293,14 @@ def mode_idle(token, idle_s):
         "name": "run_command",
         "arguments": {
             "project": "smoketest-idle",
-            "command": "mkdir -p ~/.claude/projects/-projects-smoketest-idle && touch ~/.claude/projects/-projects-smoketest-idle/forked-parent.jsonl",
+            "command": "mkdir -p ~/.claude/projects/-projects-smoketest-idle && touch ~/.claude/projects/-projects-smoketest-idle/0f0f0f0f-1111-4222-8333-444444444444.jsonl",
             "wait_seconds": 10,
         },
     }, id_=7, timeout=30)
     _, resp4 = call(token, sid, "tools/call", {
         "name": "continue_session",
         "arguments": {
-            "project": "smoketest-idle", "session_id": "forked-parent",
+            "project": "smoketest-idle", "session_id": "0f0f0f0f-1111-4222-8333-444444444444",
             "prompt": "ACTIVE=1 FORK=1 SLEEP=8", "wait_seconds": 20, "progress_events": 3,
         },
     }, id_=8, timeout=45)
@@ -308,7 +308,7 @@ def mode_idle(token, idle_s):
     if forked.get("status") != "done":
         sys.exit(f"FAIL: a resumed session that forked its transcript id was not seen as alive: {forked}")
     tpath = (forked.get("progress") or {}).get("transcript_path", "")
-    if not tpath.endswith("forked-parent-fork.jsonl"):
+    if not tpath.endswith("0f0f0f0f-1111-4222-8333-444444444444-fork.jsonl"):
         sys.exit(f"FAIL: progress followed the stale session-id file instead of the one being written "
                  f"(sibling session {sibling.get('session_id')} is still live): {forked}")
 
