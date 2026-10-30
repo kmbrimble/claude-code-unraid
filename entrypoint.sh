@@ -136,26 +136,44 @@ mkdir -p "${ANDROID_SDK_ROOT}" "${GRADLE_USER_HOME}"
 
 # Optionally start claude-code-connector (MCP over HTTP on port 8765) so
 # Claude Cowork can drive the `claude` CLI in this container.
-# SAFETY: started ONLY if CONNECTOR_TOKEN is set. Its run_command tool is an
-# arbitrary shell in a container holding the Docker socket, so the bearer
-# token is the entire security boundary; never run it unauthenticated.
+# SAFETY: started ONLY with a COMPLETE auth config for its AUTH_MODE (default
+# bearer): bearer needs CONNECTOR_TOKEN; access needs ACCESS_TEAM_DOMAIN,
+# ACCESS_AUD and ACCESS_ALLOWED_EMAILS; both needs all four. Its run_command
+# tool is an arbitrary shell in a container holding the Docker socket, so the
+# credential check is the entire security boundary; never run it
+# unauthenticated. In access mode CONNECTOR_TOKEN is withheld from the
+# connector's environment (env -u) so a stray token cannot widen it.
 # Runs as root, same as the tmux session, so it sees the same ~/.claude.
 # SKIP_PERMISSIONS=1 because headless `claude -p` cannot answer permission
 # prompts; the deny list in ~/.claude/settings.json still applies. The CLI
 # refuses --dangerously-skip-permissions as root unless IS_SANDBOX=1, which
 # is true here (a container) and is scoped to this process only. Job state
 # is in-memory, so an image update/restart drops running jobs.
-if [ -n "${CONNECTOR_TOKEN:-}" ]; then
+connector_mode="${AUTH_MODE:-bearer}"
+connector_missing=""
+case "$connector_mode" in
+  bearer) [ -n "${CONNECTOR_TOKEN:-}" ] || connector_missing="CONNECTOR_TOKEN" ;;
+  access|both)
+    [ -n "${ACCESS_TEAM_DOMAIN:-}" ] || connector_missing="$connector_missing ACCESS_TEAM_DOMAIN"
+    [ -n "${ACCESS_AUD:-}" ] || connector_missing="$connector_missing ACCESS_AUD"
+    [ -n "${ACCESS_ALLOWED_EMAILS:-}" ] || connector_missing="$connector_missing ACCESS_ALLOWED_EMAILS"
+    if [ "$connector_mode" = both ] && [ -z "${CONNECTOR_TOKEN:-}" ]; then connector_missing="$connector_missing CONNECTOR_TOKEN"; fi ;;
+  *) connector_missing="a valid AUTH_MODE (bearer|access|both, got '$connector_mode')" ;;
+esac
+if [ -z "$connector_missing" ]; then
   # The log can echo startup errors, so create it 0600 (a redirect keeps the
   # mode of an existing file, hence the explicit chmod for the persisted one).
   (umask 077; : >>"${HOME}/claude-code-connector.log")
   chmod 600 "${HOME}/claude-code-connector.log"
+  connector_unset=""
+  [ "$connector_mode" = access ] && connector_unset="-u CONNECTOR_TOKEN"
   # NODE_ENV=production: Express/Node stop printing stacks to clients.
-  NODE_ENV=production PORT=8765 HOST=0.0.0.0 PROJECTS_ROOT=/projects SKIP_PERMISSIONS=1 IS_SANDBOX=1 \
+  # shellcheck disable=SC2086  # connector_unset is a fixed flag or empty
+  env $connector_unset NODE_ENV=production PORT=8765 HOST=0.0.0.0 PROJECTS_ROOT=/projects SKIP_PERMISSIONS=1 IS_SANDBOX=1 \
     node /opt/claude-code-connector/dist/index.js >"${HOME}/claude-code-connector.log" 2>&1 &
-  echo "claude-code-connector started on port 8765 (bearer token required)."
+  echo "claude-code-connector started on port 8765 (AUTH_MODE=${connector_mode})."
 else
-  echo "No CONNECTOR_TOKEN set; claude-code-connector disabled."
+  echo "claude-code-connector disabled: AUTH_MODE=${connector_mode} needs: ${connector_missing# }."
 fi
 
 # Optionally start claude-usage-collector (HTTP on port 8766). It reads this

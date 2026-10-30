@@ -26,7 +26,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 // ---------------------------------------------------------------------------
 const PORT = Number(process.env.PORT ?? 8765);
 const HOST = process.env.HOST ?? "0.0.0.0";
-const AUTH_TOKEN = process.env.CONNECTOR_TOKEN ?? ""; // empty = no auth (localhost only!)
+const AUTH_TOKEN = process.env.CONNECTOR_TOKEN ?? ""; // empty = no auth, permitted only on a loopback HOST (see the startup checks)
 // AUTH_MODE: bearer (default, today's behaviour) | access (Cloudflare Access JWT only) | both.
 const AUTH_MODE = process.env.AUTH_MODE ?? "bearer";
 const ACCESS_TEAM_DOMAIN = (process.env.ACCESS_TEAM_DOMAIN ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
@@ -79,6 +79,10 @@ const childEnv = (extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
 if (!["bearer", "access", "both"].includes(AUTH_MODE)) { console.error(`AUTH_MODE must be bearer|access|both, got "${AUTH_MODE}"`); process.exit(1); }
 if (AUTH_MODE !== "bearer" && (!ACCESS_TEAM_DOMAIN || !ACCESS_AUD)) { console.error(`AUTH_MODE=${AUTH_MODE} needs ACCESS_TEAM_DOMAIN and ACCESS_AUD`); process.exit(1); }
 if (AUTH_MODE === "both" && !AUTH_TOKEN) { console.error("AUTH_MODE=both needs CONNECTOR_TOKEN"); process.exit(1); }
+// run_command is arbitrary shell: an Access mode with an empty allow-list would admit every identity Access signs for the aud.
+if (AUTH_MODE !== "bearer" && !ACCESS_ALLOWED_EMAILS.length) { console.error(`AUTH_MODE=${AUTH_MODE} needs a non-empty ACCESS_ALLOWED_EMAILS`); process.exit(1); }
+// Fail closed: no token on a non-loopback HOST would be an unauthenticated root shell.
+if (AUTH_MODE === "bearer" && !AUTH_TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) { console.error(`AUTH_MODE=bearer needs CONNECTOR_TOKEN unless HOST is loopback (HOST=${HOST})`); process.exit(1); }
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
@@ -928,7 +932,7 @@ function buildServer(): McpServer {
 // HTTP transport (Streamable HTTP, stateful sessions)
 // ---------------------------------------------------------------------------
 /** Per-request log state, kept in res.locals; read by the access-log middleware's `close` handler. */
-type ReqRec = { id: string; session: string | null; reject?: string; routed?: boolean; sessionNew?: string; email?: string };
+type ReqRec = { id: string; session: string | null; reject?: string; routed?: boolean; sessionNew?: string; email?: string; client?: string };
 /** Per-socket state, so keep-alive reuse and connection lifetimes are visible. */
 type Conn = { id: number; n: number; openedAt: number; timedOut?: boolean };
 const reqCtx = new AsyncLocalStorage<ReqRec>();
@@ -1026,6 +1030,7 @@ function accessLog(req: express.Request, res: express.Response) {
         ...(req.method === "POST" && reqPath === "/mcp" ? rpcInfo(req) : {}),
         session_new: rec.sessionNew,
         auth_email: rec.email,
+        auth_client: rec.client,
         status,
         duration_ms: Math.round((performance.now() - t0) * 10) / 10,
         bytes_out: bytesOut,
@@ -1054,16 +1059,20 @@ const AUTH_DIGEST = digest(`Bearer ${AUTH_TOKEN}`);
 // jose caches the key set and refetches on an unknown kid, at most once per cooldown.
 const accessJwks = AUTH_MODE === "bearer" ? null : createRemoteJWKSet(new URL(ACCESS_JWKS_URL), { cooldownDuration: envInt("ACCESS_JWKS_COOLDOWN_MS", 30_000), cacheMaxAge: 600_000 });
 
-/** Cloudflare Access JWT: signature (team JWKS), iss, aud, exp/nbf, optional email allowlist.
+/** Cloudflare Access JWT: signature (team JWKS), iss, aud, exp/nbf, mandatory email allow-list (a JWT with no email claim is rejected).
  *  Returns { email } or { reject }; reject is a fixed code (jose error code), never a claim value. */
-async function verifyAccessJwt(token: string): Promise<{ email: string } | { reject: string }> {
+async function verifyAccessJwt(token: string): Promise<{ email: string; client: string } | { reject: string }> {
   try {
     const { payload } = await jwtVerify(token, accessJwks!, {
       issuer: `https://${ACCESS_TEAM_DOMAIN}`, audience: ACCESS_AUD, algorithms: ["RS256"], clockTolerance: 5,
     });
     const email = typeof payload.email === "string" ? payload.email.toLowerCase() : "";
-    if (ACCESS_ALLOWED_EMAILS.length && !ACCESS_ALLOWED_EMAILS.includes(email)) return { reject: "access_email_denied" };
-    return { email: email || "(none)" };
+    if (!email) return { reject: "access_no_email" };
+    if (!ACCESS_ALLOWED_EMAILS.includes(email)) return { reject: "access_email_denied" };
+    // Non-secret client identifier, so a second OAuth client for the owner shows up in the log: azp / client_id, else a short `sub` prefix.
+    const id = [payload.azp, payload.client_id].find((v) => typeof v === "string" && v) as string | undefined;
+    const client = id ? id.replace(/[^\w.:@-]/g, "_").slice(0, 64) : typeof payload.sub === "string" && payload.sub ? `sub:${payload.sub.replace(/[^\w.:@-]/g, "_").slice(0, 8)}` : "(none)";
+    return { email, client };
   } catch (e: any) { return { reject: `access_jwt:${/^[A-Z_]{3,60}$/.test(e?.code ?? "") ? e.code : e?.name === "TypeError" ? "fetch_failed" : "invalid"}` }; }
 }
 
@@ -1077,7 +1086,7 @@ app.use("/mcp", async (req, res, next) => {
   const jwt = AUTH_MODE === "bearer" ? "" : req.header("cf-access-jwt-assertion") ?? "";
   if (jwt) {
     const v = await verifyAccessJwt(jwt);
-    if ("email" in v) { const r = recOf(res); if (r) r.email = v.email; return next(); }
+    if ("email" in v) { const r = recOf(res); if (r) { r.email = v.email; r.client = v.client; } return next(); }
     setReject(res, v.reject);
   } else {
     setReject(res, AUTH_MODE === "bearer" ? (h ? "bad_bearer" : "missing_bearer") : h && AUTH_MODE === "both" ? "bad_bearer" : "missing_access_jwt");

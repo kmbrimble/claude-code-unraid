@@ -69,7 +69,7 @@ const post = async (c, headers) => {
   return r.status;
 };
 const stop = (c) => c.p.kill("SIGKILL");
-const ACC = { AUTH_MODE: "access", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD };
+const ACC = { AUTH_MODE: "access", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, ACCESS_ALLOWED_EMAILS: "kieren@example.com" };
 const H = "cf-access-jwt-assertion";
 
 try {
@@ -104,6 +104,17 @@ try {
   const logTxt = readFileSync(a.log, "utf8");
   check("access: req_end logs the authenticated email", logTxt.split("\n").some((l) => l.includes('"req_end"') && l.includes('"auth_email":"kieren@example.com"')));
   check("access: log never contains the JWT", !logTxt.includes(jwt.split(".")[2]));
+  // F1: non-secret client identification (azp, else client_id, else a short sub prefix); never the payload
+  const cj = await sign(k1, {}, { azp: "client-abc123" });
+  await post(a, { [H]: cj });
+  const cj2 = await sign(k1, {}, { client_id: "cid-xyz" });
+  await post(a, { [H]: cj2 });
+  await new Promise((r) => setTimeout(r, 300));
+  const logTxt2 = readFileSync(a.log, "utf8");
+  check("access: log carries the azp client id", logTxt2.includes('"auth_client":"client-abc123"'));
+  check("access: log carries client_id when no azp", logTxt2.includes('"auth_client":"cid-xyz"'));
+  check("access: log falls back to a sub prefix", logTxt2.includes('"auth_client":"sub:user-1"'));
+  check("access: log never contains the JWT payload or signature", !logTxt2.includes(cj.split(".")[1]) && !logTxt2.includes(cj.split(".")[2]));
   check("access: expired JWT logged with a fixed reason code", logTxt.includes('"reject_reason":"access_jwt:ERR_JWT_EXPIRED"'));
   stop(a);
 
@@ -114,10 +125,13 @@ try {
   await new Promise((r) => setTimeout(r, 300));
   check("allowlist: denial logged as access_email_denied", readFileSync(al.log, "utf8").includes('"reject_reason":"access_email_denied"'));
   check("allowlist: no email claim -> 401", (await post(al, { [H]: await sign(k1, {}, { email: undefined }) })) === 401);
+  await new Promise((r) => setTimeout(r, 300));
+  check("allowlist: no email claim logged as access_no_email", readFileSync(al.log, "utf8").includes('"reject_reason":"access_no_email"'));
   stop(al);
 
   // ---- both
   const b = await start({ ...ACC, AUTH_MODE: "both", CONNECTOR_TOKEN: TOKEN });
+  check("both: JWT with no email -> 401", (await post(b, { [H]: await sign(k1, {}, { email: undefined }) })) === 401);
   check("both: bearer accepted", (await post(b, { authorization: "Bearer " + TOKEN })) === 200);
   check("both: JWT accepted", (await post(b, { [H]: await sign(k1) })) === 200);
   check("both: neither -> 401", (await post(b, {})) === 401);
@@ -136,14 +150,24 @@ try {
 
   // ---- config errors fail closed at startup
   const bad = async (env, name) => {
-    const clean = { ...process.env }; for (const k of ["CONNECTOR_TOKEN", "AUTH_MODE", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) delete clean[k];
+    const clean = { ...process.env }; for (const k of ["CONNECTOR_TOKEN", "AUTH_MODE", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "ACCESS_ALLOWED_EMAILS", "HOST"]) delete clean[k];
     const p = spawn("node", [ENTRY], { env: { ...clean, PORT: String(nextPort++), HOST: "127.0.0.1", PROJECTS_ROOT: WORK, CLAUDE_HOME: WORK,
       CONNECTOR_LOG_FILE: path.join(WORK, "bad.jsonl"), ...env }, stdio: "ignore" });
     const code = await new Promise((r) => { const t = setTimeout(() => { p.kill("SIGKILL"); r("running"); }, 4000); p.on("exit", (c) => { clearTimeout(t); r(c); }); });
     check(name, code !== "running" && code !== 0, String(code));
   };
   await bad({ AUTH_MODE: "access" }, "config: access without team domain/aud refuses to start");
-  await bad({ AUTH_MODE: "both", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD }, "config: both without CONNECTOR_TOKEN refuses to start");
+  await bad({ AUTH_MODE: "both", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, ACCESS_ALLOWED_EMAILS: "a@b.c" }, "config: both without CONNECTOR_TOKEN refuses to start");
+  await bad({ AUTH_MODE: "access", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD }, "config: access with no ACCESS_ALLOWED_EMAILS refuses to start");
+  await bad({ AUTH_MODE: "access", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD, ACCESS_ALLOWED_EMAILS: " , " }, "config: access with a blank-only ACCESS_ALLOWED_EMAILS refuses to start");
+  await bad({ AUTH_MODE: "both", CONNECTOR_TOKEN: TOKEN, ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD }, "config: both with no ACCESS_ALLOWED_EMAILS refuses to start");
+  await bad({ HOST: "0.0.0.0" }, "config: bearer with no token on 0.0.0.0 refuses to start");
+  await bad({ AUTH_MODE: "bearer", HOST: "192.168.0.5" }, "config: explicit bearer with no token on a LAN address refuses to start");
+  // loopback with no token is the one permitted open configuration
+  // (127.0.0.1 only: the harness probes that address, and "localhost"/"::1" may bind elsewhere)
+  const o = await start({ HOST: "127.0.0.1" });
+  check("config: bearer with no token is allowed on loopback", (await post(o, {})) === 200);
+  stop(o);
   await bad({ AUTH_MODE: "acess", ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD }, "config: unknown AUTH_MODE refuses to start");
 } finally {
   jwks.close();

@@ -747,17 +747,31 @@ NOTOKEN_NAME="${NAME}-notoken"
 new_home NOTOKEN_HOME
 docker run -d --name "$NOTOKEN_NAME" -v "$NOTOKEN_HOME:/root" "$TAG" >/dev/null 2>&1
 sleep 3
-check "connector does not listen when CONNECTOR_TOKEN is unset" docker exec "$NOTOKEN_NAME" bash -c \
+check "connector does not listen with no auth config at all (constraint 7)" docker exec "$NOTOKEN_NAME" bash -c \
   '! curl -sf http://127.0.0.1:8765/healthz >/dev/null'
 docker rm -f "$NOTOKEN_NAME" >/dev/null 2>&1
 remove_home "$NOTOKEN_HOME"
 
-# The four sub-test homes above are finished with, so none of them may still
+# 0.38: a token alone is NOT a complete config in access mode (no ACCESS_ALLOWED_EMAILS).
+INCOMPLETE_NAME="${NAME}-access-incomplete"
+new_home INCOMPLETE_HOME
+docker run -d --name "$INCOMPLETE_NAME" -v "$INCOMPLETE_HOME:/root" -e AUTH_MODE=access \
+  -e CONNECTOR_TOKEN=smoketest-token -e ACCESS_TEAM_DOMAIN=team.example.cloudflareaccess.com \
+  -e ACCESS_AUD=smoketest-aud "$TAG" >/dev/null 2>&1
+sleep 3
+check "connector does not listen in AUTH_MODE=access without ACCESS_ALLOWED_EMAILS" docker exec "$INCOMPLETE_NAME" bash -c \
+  '! curl -sf http://127.0.0.1:8765/healthz >/dev/null'
+check "entrypoint logs why the incomplete access config was skipped" bash -c \
+  "docker logs '$INCOMPLETE_NAME' 2>&1 | grep -q 'connector disabled: AUTH_MODE=access needs: ACCESS_ALLOWED_EMAILS'"
+docker rm -f "$INCOMPLETE_NAME" >/dev/null 2>&1
+remove_home "$INCOMPLETE_HOME"
+
+# The five sub-test homes above are finished with, so none of them may still
 # exist where the daemon created them (see the TRAP note at new_home). This
 # is the check that would have caught the host /tmp leak.
 sub_test_homes_gone() {
   local d
-  for d in "$TIMEOUT_HOME" "$IDLE_HOME" "$COLLECTOR_HOME" "$NOTOKEN_HOME"; do
+  for d in "$TIMEOUT_HOME" "$IDLE_HOME" "$COLLECTOR_HOME" "$NOTOKEN_HOME" "$INCOMPLETE_HOME"; do
     home_gone_on_daemon "$d" || return 1
   done
 }
