@@ -140,7 +140,7 @@ can silently change installed tool versions if the image changed.
   deny list is **not** a control on `run_command`; the bearer token is.
 - **Hardening (0.36; takes effect only after a force-update, since it is an image change).**
   Children (`run_command`, `claude -p`) no longer inherit `CONNECTOR_TOKEN` or
-  `USAGE_COLLECTOR_TOKEN`; they still get `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
+  `USAGE_COLLECTOR_TOKEN` (nor `NODE_ENV`, which would flip their builds into production mode); they still get `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
   `CUSTOM_API_KEY` and `OPENROUTER_API_KEY`, which they need. Bearer auth runs *before* the
   body is parsed and compares in constant time; parse/size errors return a generic JSON-RPC
   error with no stack; `X-Powered-By` is off; `/healthz` returns only `{"ok":true}`; the

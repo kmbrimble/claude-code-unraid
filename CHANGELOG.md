@@ -7,7 +7,7 @@ is only ever advanced manually. Newest at top.
 ## [Unreleased]
 
 - **Connector Phase 1 hardening** (from a read-only audit, session f8d98df0).
-  Children no longer inherit `CONNECTOR_TOKEN` / `USAGE_COLLECTOR_TOKEN` (kept: `CLAUDE_CODE_OAUTH_TOKEN`,
+  Children no longer inherit `CONNECTOR_TOKEN` / `USAGE_COLLECTOR_TOKEN` / `NODE_ENV` (the last found in review: the entrypoint's `NODE_ENV=production` would otherwise have made every child's `npm install` skip devDependencies) (kept: `CLAUDE_CODE_OAUTH_TOKEN`,
   `GH_TOKEN`, `CUSTOM_API_KEY`, `OPENROUTER_API_KEY`). Auth now runs before JSON parsing, compares via
   `timingSafeEqual` on SHA-256 digests, errors return a generic body with no stack, `X-Powered-By` is off,
   and the entrypoint sets `NODE_ENV=production`. `/healthz` returns only `{"ok":true}` (nothing relied on

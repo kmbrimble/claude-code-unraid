@@ -105,6 +105,7 @@ def run(sid, cmd, **kw):
 
 def spawn(extra_env=None):
     env = {k: v for k, v in os.environ.items() if k not in ("CONNECTOR_TOKEN", "USAGE_COLLECTOR_TOKEN", "NODE_ENV")}
+    env["NODE_ENV"] = "development"  # non-production on purpose: it is the mode that prints stacks
     env.update({
         "PORT": str(PORT), "HOST": "127.0.0.1", "CONNECTOR_TOKEN": TOKEN,
         "USAGE_COLLECTOR_TOKEN": COLLECTOR_TOKEN, "PROJECTS_ROOT": ROOT, "CLAUDE_HOME": HOME,
@@ -155,6 +156,7 @@ try:
           TOKEN not in json.dumps(out) and COLLECTOR_TOKEN not in json.dumps(out) and "rc=1" in out.get("stdout", ""),
           "a secret reached the child" if TOKEN in json.dumps(out) or COLLECTOR_TOKEN in json.dumps(out) else out)
     env_dump = run(sid, "env").get("stdout", "")
+    check("child env has no NODE_ENV (the connector's own mode must not leak into builds)", "NODE_ENV" not in env_dump, "NODE_ENV leaked")
     check("child env still has GH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CUSTOM_API_KEY, OPENROUTER_API_KEY",
           all(f"{k}={v}" in env_dump for k, v in KEEP.items()), [k for k, v in KEEP.items() if f"{k}={v}" not in env_dump])
     tool_json(sid, "start_session", {"project": "p", "prompt": "hi", "wait_seconds": 10})
@@ -257,8 +259,8 @@ try:
 finally:
     stop(proc)
 
-# The connector is spawned WITHOUT NODE_ENV on purpose (Express's dev mode is the one that
-# prints stacks), so the error handler is tested on its own merits. The entrypoint's
+# The connector is spawned with NODE_ENV=development on purpose (Express's non-production
+# mode is the one that prints stacks), so the error handler is tested on its own merits. The entrypoint's
 # NODE_ENV=production and the 0600 log file are asserted by test/smoke.sh.
 shutil.rmtree(WORK, ignore_errors=True)
 print(f"\n{len(failures)} failed" if failures else "\nall hardening checks passed")

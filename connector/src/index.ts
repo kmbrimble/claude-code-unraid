@@ -59,7 +59,9 @@ const MAX_FINISHED_JOBS = Number(process.env.MAX_FINISHED_JOBS ?? 200);
 // must never inherit them: a command could print them into a transcript.
 // Deliberately NOT stripped, because children need them: CLAUDE_CODE_OAUTH_TOKEN
 // (`claude -p` auth), GH_TOKEN (git/gh), CUSTOM_API_KEY / OPENROUTER_API_KEY (PAL).
-const CHILD_ENV_STRIP = ["CONNECTOR_TOKEN", "USAGE_COLLECTOR_TOKEN"];
+// NODE_ENV is the connector's own runtime mode (entrypoint sets production); left in,
+// it would make every child's `npm install` skip devDependencies and flip build modes.
+const CHILD_ENV_STRIP = ["CONNECTOR_TOKEN", "USAGE_COLLECTOR_TOKEN", "NODE_ENV"];
 const childEnv = (extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const env = { ...process.env, ...extra };
   for (const k of CHILD_ENV_STRIP) delete env[k];
