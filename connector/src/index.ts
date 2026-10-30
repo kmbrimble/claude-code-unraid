@@ -19,6 +19,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -26,6 +27,13 @@ import { z } from "zod";
 const PORT = Number(process.env.PORT ?? 8765);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const AUTH_TOKEN = process.env.CONNECTOR_TOKEN ?? ""; // empty = no auth (localhost only!)
+// AUTH_MODE: bearer (default, today's behaviour) | access (Cloudflare Access JWT only) | both.
+const AUTH_MODE = process.env.AUTH_MODE ?? "bearer";
+const ACCESS_TEAM_DOMAIN = (process.env.ACCESS_TEAM_DOMAIN ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+const ACCESS_AUD = (process.env.ACCESS_AUD ?? "").trim();
+const ACCESS_ALLOWED_EMAILS = (process.env.ACCESS_ALLOWED_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+// Test seam only: the real JWKS URL is always derived from the team domain.
+const ACCESS_JWKS_URL = process.env.ACCESS_JWKS_URL || `https://${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`;
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const PROJECTS_ROOT = path.resolve(process.env.PROJECTS_ROOT ?? "/workspace");
 const CLAUDE_HOME = process.env.CLAUDE_HOME ?? path.join(os.homedir(), ".claude");
@@ -67,6 +75,10 @@ const childEnv = (extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   for (const k of CHILD_ENV_STRIP) delete env[k];
   return env;
 };
+// Fail closed: a misspelt or half-configured mode must not quietly become "no auth".
+if (!["bearer", "access", "both"].includes(AUTH_MODE)) { console.error(`AUTH_MODE must be bearer|access|both, got "${AUTH_MODE}"`); process.exit(1); }
+if (AUTH_MODE !== "bearer" && (!ACCESS_TEAM_DOMAIN || !ACCESS_AUD)) { console.error(`AUTH_MODE=${AUTH_MODE} needs ACCESS_TEAM_DOMAIN and ACCESS_AUD`); process.exit(1); }
+if (AUTH_MODE === "both" && !AUTH_TOKEN) { console.error("AUTH_MODE=both needs CONNECTOR_TOKEN"); process.exit(1); }
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
@@ -916,7 +928,7 @@ function buildServer(): McpServer {
 // HTTP transport (Streamable HTTP, stateful sessions)
 // ---------------------------------------------------------------------------
 /** Per-request log state, kept in res.locals; read by the access-log middleware's `close` handler. */
-type ReqRec = { id: string; session: string | null; reject?: string; routed?: boolean; sessionNew?: string };
+type ReqRec = { id: string; session: string | null; reject?: string; routed?: boolean; sessionNew?: string; email?: string };
 /** Per-socket state, so keep-alive reuse and connection lifetimes are visible. */
 type Conn = { id: number; n: number; openedAt: number; timedOut?: boolean };
 const reqCtx = new AsyncLocalStorage<ReqRec>();
@@ -1013,6 +1025,7 @@ function accessLog(req: express.Request, res: express.Response) {
         ...started,
         ...(req.method === "POST" && reqPath === "/mcp" ? rpcInfo(req) : {}),
         session_new: rec.sessionNew,
+        auth_email: rec.email,
         status,
         duration_ms: Math.round((performance.now() - t0) * 10) / 10,
         bytes_out: bytesOut,
@@ -1038,13 +1051,36 @@ app.get("/healthz", (_req, res) => { markRouted(res); res.json({ ok: true }); })
 const digest = (s: string) => createHash("sha256").update(s).digest();
 const AUTH_DIGEST = digest(`Bearer ${AUTH_TOKEN}`);
 
+// jose caches the key set and refetches on an unknown kid, at most once per cooldown.
+const accessJwks = AUTH_MODE === "bearer" ? null : createRemoteJWKSet(new URL(ACCESS_JWKS_URL), { cooldownDuration: envInt("ACCESS_JWKS_COOLDOWN_MS", 30_000), cacheMaxAge: 600_000 });
+
+/** Cloudflare Access JWT: signature (team JWKS), iss, aud, exp/nbf, optional email allowlist. Returns the email, or null. */
+async function verifyAccessJwt(token: string): Promise<string | null> {
+  try {
+    const { payload } = await jwtVerify(token, accessJwks!, {
+      issuer: `https://${ACCESS_TEAM_DOMAIN}`, audience: ACCESS_AUD, algorithms: ["RS256"], clockTolerance: 5,
+    });
+    const email = typeof payload.email === "string" ? payload.email.toLowerCase() : "";
+    if (ACCESS_ALLOWED_EMAILS.length && !ACCESS_ALLOWED_EMAILS.includes(email)) return null;
+    return email || "(none)";
+  } catch { return null; }
+}
+
 // Auth runs BEFORE the body is parsed, so an unauthenticated caller costs a
 // header comparison, not a 4 MB JSON parse.
-app.use("/mcp", (req, res, next) => {
-  if (!AUTH_TOKEN) return next();
+app.use("/mcp", async (req, res, next) => {
+  if (AUTH_MODE === "bearer" && !AUTH_TOKEN) return next();
   const h = req.header("authorization") ?? "";
-  if (timingSafeEqual(digest(h), AUTH_DIGEST)) return next();
-  setReject(res, h ? "bad_bearer" : "missing_bearer");
+  // In access mode the Authorization header is never consulted.
+  if (AUTH_MODE !== "access" && timingSafeEqual(digest(h), AUTH_DIGEST)) return next();
+  const jwt = AUTH_MODE === "bearer" ? "" : req.header("cf-access-jwt-assertion") ?? "";
+  if (jwt) {
+    const email = await verifyAccessJwt(jwt);
+    if (email) { const r = recOf(res); if (r) r.email = email; return next(); }
+    setReject(res, "bad_access_jwt");
+  } else {
+    setReject(res, AUTH_MODE === "bearer" ? (h ? "bad_bearer" : "missing_bearer") : h && AUTH_MODE === "both" ? "bad_bearer" : "missing_access_jwt");
+  }
   res.status(401).json({ error: "unauthorized" });
 });
 app.use("/mcp", express.json({ limit: "4mb" }));
@@ -1133,9 +1169,9 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
 });
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`claude-code-connector listening on http://${HOST}:${PORT}/mcp  (projects: ${PROJECTS_ROOT}, auth: ${AUTH_TOKEN ? "bearer" : "none"})`);
+  console.log(`claude-code-connector listening on http://${HOST}:${PORT}/mcp  (projects: ${PROJECTS_ROOT}, auth: ${AUTH_MODE === "bearer" ? (AUTH_TOKEN ? "bearer" : "none") : AUTH_MODE})`);
   logEvent("server_start", {
-    pid: process.pid, node: process.version, port: PORT, host: HOST, auth: AUTH_TOKEN ? "bearer" : "none",
+    pid: process.pid, node: process.version, port: PORT, host: HOST, auth: AUTH_MODE === "bearer" ? (AUTH_TOKEN ? "bearer" : "none") : AUTH_MODE,
     max_wait_seconds: MAX_WAIT_SECONDS, default_timeout_ms: DEFAULT_TIMEOUT_MS, idle_timeout_ms: IDLE_TIMEOUT_MS,
     kill_grace_ms: KILL_GRACE_MS, log_file: LOG_FILE, log_max_bytes: LOG_MAX_BYTES, log_keep: LOG_KEEP,
     // Read, never set: these are Node's own values, logged so a drop can be compared against them.

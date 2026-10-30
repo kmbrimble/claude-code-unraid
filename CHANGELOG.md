@@ -6,6 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Connector Phase 2: pluggable auth (Cloudflare Access Managed OAuth).** `AUTH_MODE=bearer` (default, unchanged) | `access` | `both`. `access` validates `Cf-Access-Jwt-Assertion` with `jose` (RS256, team JWKS cached, refetch on unknown kid with a 30 s cooldown, `iss`/`aud`/`exp`/`nbf`, optional `ACCESS_ALLOWED_EMAILS`) and never consults `Authorization`; misconfiguration exits at startup rather than degrading to no auth. `req_end` logs `auth_email`. Config: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `ACCESS_ALLOWED_EMAILS`; test seams `ACCESS_JWKS_URL`, `ACCESS_JWKS_COOLDOWN_MS`. Entrypoint defaults untouched. Test: `test/connector_access_check.mjs` (wired into `smoke.sh`).
+
 ## 0.36 (2026-10-30)
 
 - **Connector Phase 1 hardening** (from a read-only audit, session f8d98df0).

@@ -923,6 +923,12 @@ check "connector read_file: byte-identical image blocks for PNG/JPEG, unchanged 
 docker cp "$REPO_ROOT/test/connector_hardening_check.py" "$NAME:/tmp/connector_hardening_check.py" >/dev/null 2>&1
 check "connector hardening: child env stripped of its own secrets, auth before body parse, generic errors, constant-time auth, minimal /healthz, output cap and job eviction, bounded read_file, UUID-only session ids, symlink containment, prompt after --" \
   docker exec "$NAME" python3 /tmp/connector_hardening_check.py
+
+# Phase 2 (0.37): AUTH_MODE access|both|bearer against a local JWKS server
+# (connector_access_check.mjs); jose resolves from the image's connector install.
+docker cp "$REPO_ROOT/test/connector_access_check.mjs" "$NAME:/tmp/connector_access_check.mjs" >/dev/null 2>&1
+check "connector AUTH_MODE: Cloudflare Access JWT (aud/iss/exp/nbf/signature/allowlist/rotation), both, bearer unchanged, bad config fails closed" \
+  docker exec "$NAME" node /tmp/connector_access_check.mjs
 check "entrypoint starts the connector with NODE_ENV=production" docker exec "$NAME" bash -c '
   for p in /proc/[0-9]*; do
     tr "\0" " " <"$p/cmdline" 2>/dev/null | grep -q "^node /opt/claude-code-connector/dist/index.js" || continue

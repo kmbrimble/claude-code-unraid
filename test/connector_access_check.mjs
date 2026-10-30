@@ -52,7 +52,7 @@ async function start(env) {
   const port = nextPort++;
   const log = path.join(WORK, `log-${port}.jsonl`);
   const e = { ...process.env, PORT: String(port), HOST: "127.0.0.1", PROJECTS_ROOT: WORK, CLAUDE_HOME: WORK,
-    CONNECTOR_LOG_FILE: log, ACCESS_JWKS_URL: JWKS_URL, ...env };
+    CONNECTOR_LOG_FILE: log, ACCESS_JWKS_URL: JWKS_URL, ACCESS_JWKS_COOLDOWN_MS: "1500", ...env };
   for (const k of ["CONNECTOR_TOKEN", "AUTH_MODE", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "ACCESS_ALLOWED_EMAILS"]) if (!(k in env)) delete e[k];
   const p = spawn("node", [ENTRY], { env: e, stdio: "ignore" });
   for (let i = 0; i < 100; i++) {
@@ -88,6 +88,7 @@ try {
   check("access: /healthz stays open", (await fetch(`http://127.0.0.1:${a.port}/healthz`)).ok);
 
   // rotation: unknown kid triggers a refetch; the refetch is rate-limited
+  await new Promise((r) => setTimeout(r, 1600)); // let the refetch cooldown lapse
   published = [k1, k2];
   check("access: key rotated in (unknown kid -> refetch) accepted", (await post(a, { [H]: await sign(k2) })) === 200);
   const before = jwksHits;
@@ -132,7 +133,8 @@ try {
 
   // ---- config errors fail closed at startup
   const bad = async (env, name) => {
-    const p = spawn("node", [ENTRY], { env: { ...process.env, PORT: String(nextPort++), HOST: "127.0.0.1", PROJECTS_ROOT: WORK, CLAUDE_HOME: WORK,
+    const clean = { ...process.env }; for (const k of ["CONNECTOR_TOKEN", "AUTH_MODE", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) delete clean[k];
+    const p = spawn("node", [ENTRY], { env: { ...clean, PORT: String(nextPort++), HOST: "127.0.0.1", PROJECTS_ROOT: WORK, CLAUDE_HOME: WORK,
       CONNECTOR_LOG_FILE: path.join(WORK, "bad.jsonl"), ...env }, stdio: "ignore" });
     const code = await new Promise((r) => { const t = setTimeout(() => { p.kill("SIGKILL"); r("running"); }, 4000); p.on("exit", (c) => { clearTimeout(t); r(c); }); });
     check(name, code !== "running" && code !== 0, String(code));
