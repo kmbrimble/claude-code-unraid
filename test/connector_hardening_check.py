@@ -256,6 +256,30 @@ try:
     argv = open(ARGV_LOG, "rb").read().split(b"\n")[0].split(b"\0")[:-1]
     check("the prompt follows a `--` so a leading dash cannot become a flag",
           argv[-2:] == [b"--", b"--dangerously-skip-permissions -rf"], argv[-3:])
+
+    # 5g. Option-value arguments (F8): bad values are refused and claude is never spawned.
+    UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    base = {"project": "p", "prompt": "hi", "wait_seconds": 10}
+    for label, tname, extra in (
+        ("session_id that is not a UUID", "continue_session", {"session_id": "--dangerously-skip-permissions"}),
+        ("model starting with '-'", "start_session", {"model": "--version"}),
+        ("model with a space", "start_session", {"model": "sonnet --x"}),
+        ("allowed_tools entry starting with '-'", "start_session", {"allowed_tools": ["Read", "--x"]}),
+    ):
+        open(ARGV_LOG, "w").close()
+        content, err = tool(sid, tname, {**base, **extra})
+        check(f"{label} is rejected without spawning claude",
+              err and os.path.getsize(ARGV_LOG) == 0, (err, content[:1], os.path.getsize(ARGV_LOG)))
+    open(ARGV_LOG, "w").close()
+    r = tool_json(sid, "continue_session", {**base, "session_id": UUID, "model": "claude-sonnet-5-5", "allowed_tools": ["Read", "Bash(git *)"]})[0]
+    argv = open(ARGV_LOG, "rb").read().split(b"\n")[0].split(b"\0")[:-1]
+    check("a valid UUID, model and allowed_tools still reach claude",
+          r.get("status") == "done" and b"--resume" in argv and UUID.encode() in argv and b"claude-sonnet-5-5" in argv, argv)
+    open(ARGV_LOG, "w").close()
+    tool_json(sid, "start_session", {**base, "append_system_prompt": "--dangerously-skip-permissions"})
+    argv = open(ARGV_LOG, "rb").read().split(b"\n")[0].split(b"\0")[:-1]
+    check("append_system_prompt is one --flag=value argument, never a bare option value",
+          b"--append-system-prompt=--dangerously-skip-permissions" in argv and b"--append-system-prompt" not in argv, argv)
 finally:
     stop(proc)
 

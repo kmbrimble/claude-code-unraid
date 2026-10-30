@@ -10,7 +10,14 @@ trap 'exit 0' SIGTERM SIGINT
 if [ -n "${GH_TOKEN:-}" ]; then
   git config --global user.name "${GIT_USER_NAME:-Butler Bot}"
   git config --global user.email "${GIT_USER_EMAIL:-butler-bot@users.noreply.github.com}"
-  git config --global --add safe.directory '*'
+  # Scoped, not '*': a repo planted on /host/mnt must not get its hooks/fsmonitor run as root.
+  # git 2.39 has no wildcard form, so list each repo root; re-run each boot, so no duplicates.
+  git config --global --fixed-value --unset-all safe.directory '*' || true
+  for d in /projects /projects/*/ /projects/.worktrees/*/ /root/.local/share/wt/*/; do
+    d="${d%/}"
+    [ -e "$d/.git" ] || continue
+    git config --global --get-all safe.directory | grep -qxF "$d" || git config --global --add safe.directory "$d"
+  done
   gh auth setup-git 2>/dev/null && echo "GitHub auth configured from GH_TOKEN." || echo "WARN: gh auth setup-git failed."
 else
   echo "No GH_TOKEN set; autonomous push disabled."

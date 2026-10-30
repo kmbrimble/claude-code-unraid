@@ -83,6 +83,8 @@ if (AUTH_MODE === "both" && !AUTH_TOKEN) { console.error("AUTH_MODE=both needs C
 if (AUTH_MODE !== "bearer" && !ACCESS_ALLOWED_EMAILS.length) { console.error(`AUTH_MODE=${AUTH_MODE} needs a non-empty ACCESS_ALLOWED_EMAILS`); process.exit(1); }
 // Fail closed: no token on a non-loopback HOST would be an unauthenticated root shell.
 if (AUTH_MODE === "bearer" && !AUTH_TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) { console.error(`AUTH_MODE=bearer needs CONNECTOR_TOKEN unless HOST is loopback (HOST=${HOST})`); process.exit(1); }
+// Values for `claude --model`: no leading "-" so it can never read as a flag.
+const MODEL_RE = /^[A-Za-z0-9._:/[\]][A-Za-z0-9._:/[\]-]{0,99}$/;
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
@@ -561,7 +563,7 @@ function claudeArgs(o: {
   if (o.model) a.push("--model", o.model);
   if (o.maxTurns) a.push("--max-turns", String(o.maxTurns));
   if (o.allowedTools?.length) a.push("--allowedTools", o.allowedTools.join(","));
-  if (o.systemPrompt) a.push("--append-system-prompt", o.systemPrompt);
+  if (o.systemPrompt) a.push(`--append-system-prompt=${o.systemPrompt}`); // = form: a leading "-" can't be parsed as a flag
   if (o.permissionMode) a.push("--permission-mode", o.permissionMode);
   else if (SKIP_PERMISSIONS) a.push("--dangerously-skip-permissions");
   a.push("--", o.prompt); // so a prompt starting with "-" can never be read as a flag
@@ -724,9 +726,10 @@ function buildServer(): McpServer {
   const claudeCommon = {
     project: z.string().describe("Project folder, relative to PROJECTS_ROOT or absolute."),
     prompt: z.string().describe("The instruction to send to Claude Code."),
-    model: z.string().optional().describe("e.g. sonnet, opus, or a full model id"),
+    model: z.string().regex(MODEL_RE, "model may contain only letters, digits and . - _ : / [ ], and must not start with '-'")
+      .optional().describe("e.g. sonnet, opus, or a full model id"),
     max_turns: z.number().int().min(1).max(200).optional(),
-    allowed_tools: z.array(z.string()).optional().describe('e.g. ["Read","Edit","Bash(git *)"]'),
+    allowed_tools: z.array(z.string().refine((t) => !t.startsWith("-"), "allowed_tools entries must not start with '-'")).optional().describe('e.g. ["Read","Edit","Bash(git *)"]'),
     permission_mode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]).optional(),
     append_system_prompt: z.string().optional(),
     wait_seconds: z.number().min(0).max(600).default(MAX_WAIT_SECONDS).describe(
@@ -781,7 +784,7 @@ function buildServer(): McpServer {
     {
       title: "Continue an existing Claude Code session",
       description: "Resume an existing session by session_id (see list_sessions) and send it a new prompt, preserving its full context.",
-      inputSchema: { ...claudeCommon, session_id: z.string() },
+      inputSchema: { ...claudeCommon, session_id: z.string().regex(SESSION_ID_RE, "session_id must be a UUID") },
     },
     async (a) => {
       const cwd = safeProjectPath(a.project);
