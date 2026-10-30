@@ -24,7 +24,25 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const PORT = Number(process.env.PORT ?? 8765);
+/**
+ * Strict integer env var: unset or empty gives the default; anything else must be a plain
+ * decimal integer in [min, max] or startup fails with a message naming the variable. Number()
+ * alone turns "abc" into NaN (every comparison false: a cap that never fires, a timer that
+ * fires at once) and "1e999" into Infinity. The default max is the largest setTimeout delay,
+ * because a larger one fires immediately.
+ */
+function envInt(name: string, def: number, min = 1, max = 2 ** 31 - 1): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return def;
+  const n = /^\d{1,15}$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  if (!Number.isSafeInteger(n) || n < min || n > max) {
+    console.error(`FATAL: ${name} must be an integer between ${min} and ${max}; got ${JSON.stringify(raw.slice(0, 40))}`);
+    process.exit(1);
+  }
+  return n;
+}
+
+const PORT = envInt("PORT", 8765, 1, 65535);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const AUTH_TOKEN = process.env.CONNECTOR_TOKEN ?? ""; // empty = no auth (localhost only!)
 // AUTH_MODE: bearer (default, today's behaviour) | access (Cloudflare Access JWT only) | both.
@@ -37,32 +55,42 @@ const ACCESS_JWKS_URL = process.env.ACCESS_JWKS_URL || `https://${ACCESS_TEAM_DO
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const PROJECTS_ROOT = path.resolve(process.env.PROJECTS_ROOT ?? "/workspace");
 const CLAUDE_HOME = process.env.CLAUDE_HOME ?? path.join(os.homedir(), ".claude");
-const DEFAULT_TIMEOUT_MS = Number(process.env.DEFAULT_TIMEOUT_MS ?? 30 * 60_000);
+const DEFAULT_TIMEOUT_MS = envInt("DEFAULT_TIMEOUT_MS", 30 * 60_000);
 const SKIP_PERMISSIONS = process.env.SKIP_PERMISSIONS === "1";
 // Ceiling on any blocking wait. The MCP *client* abandons a single tool call
 // after a fixed, client-dependent period (seen at ~60s and at 180s) while the
 // job underneath keeps running; waiting longer than that just loses the reply.
-const MAX_WAIT_SECONDS = Number(process.env.MAX_WAIT_SECONDS ?? 55);
+const MAX_WAIT_SECONDS = envInt("MAX_WAIT_SECONDS", 55);
 // Idle timeout: 0 = disabled, so DEFAULT_TIMEOUT_MS keeps its 0.26 semantics.
-const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? 0);
+const IDLE_TIMEOUT_MS = envInt("IDLE_TIMEOUT_MS", 0, 0);
 // How long a killed job gets to exit on SIGTERM before it is SIGKILLed.
-const KILL_GRACE_MS = Number(process.env.KILL_GRACE_MS ?? 10_000);
+const KILL_GRACE_MS = envInt("KILL_GRACE_MS", 10_000);
 // Never read more than this from the tail of a session transcript: the live
 // ones reach tens of megabytes.
 const TAIL_BYTES = 256_000;
 // Cap on read_file's whole-file image reads (base64-encoded, never
 // truncated — a truncated image is corrupt). A few MB comfortably covers a
 // screenshot; env-overridable for the rare larger asset.
-const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES ?? 5_000_000);
+const MAX_IMAGE_BYTES = envInt("MAX_IMAGE_BYTES", 5_000_000);
 // A job keeps only the tail of each output stream, so one chatty command cannot
 // grow the connector's heap without bound. 1 MB is far more than any caller can
 // read back (summariseJob returns the last 20k); the dropped count is reported.
-const OUTPUT_CAP_CHARS = Number(process.env.OUTPUT_CAP_BYTES ?? 1_000_000);
+const OUTPUT_CAP_CHARS = envInt("OUTPUT_CAP_BYTES", 1_000_000);
 // Finished jobs are kept so list_jobs can recover a call the client abandoned:
 // a day covers an overnight run being checked the next morning, and 200 bounds
 // the heap (worst case ~2 MB each) when a busy day produces many short jobs.
-const JOB_RETENTION_MS = Number(process.env.JOB_RETENTION_MS ?? 24 * 3600_000);
-const MAX_FINISHED_JOBS = Number(process.env.MAX_FINISHED_JOBS ?? 200);
+const JOB_RETENTION_MS = envInt("JOB_RETENTION_MS", 24 * 3600_000);
+const MAX_FINISHED_JOBS = envInt("MAX_FINISHED_JOBS", 200, 0)
+// Resource caps (0.38). Generous for one owner running several chats and scheduled tasks at once;
+// they bound a runaway caller, not normal use. A job or session over its cap is refused with a
+// clear error rather than queued. read_file's text cap is a hard ceiling on max_bytes.
+const MAX_RUNNING_JOBS = envInt("MAX_RUNNING_JOBS", 16);
+const MAX_SESSIONS = envInt("MAX_SESSIONS", 64);
+// A session untouched this long is closed; the client re-initialises on the 404, per the spec.
+const SESSION_IDLE_MS = envInt("SESSION_IDLE_MS", 24 * 3600_000);
+const MAX_READ_BYTES = envInt("MAX_READ_BYTES", 1_000_000);
+// list_sessions only needs the first prompt and cwd, which sit in the first few lines.
+const HEAD_BYTES = 64_000;;
 // Credentials the connector holds for itself. Children (run_command, `claude -p`)
 // must never inherit them: a command could print them into a transcript.
 // Deliberately NOT stripped, because children need them: CLAUDE_CODE_OAUTH_TOKEN
@@ -91,13 +119,9 @@ const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 // A logging failure is counted, never thrown: it must not crash, block or slow
 // a request, so lines are queued and written off the request path.
 // ---------------------------------------------------------------------------
-const envInt = (name: string, def: number) => {
-  const n = Number(process.env[name]);
-  return process.env[name] !== undefined && process.env[name] !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : def;
-};
 const LOG_FILE = process.env.CONNECTOR_LOG_FILE || "/root/connector-logs/connector.jsonl";
-const LOG_MAX_BYTES = envInt("CONNECTOR_LOG_MAX_BYTES", 20 * 1024 * 1024);
-const LOG_KEEP = envInt("CONNECTOR_LOG_KEEP", 3);
+const LOG_MAX_BYTES = envInt("CONNECTOR_LOG_MAX_BYTES", 20 * 1024 * 1024, 0);
+const LOG_KEEP = envInt("CONNECTOR_LOG_KEEP", 3, 0);
 const LOG_STR_CAP = 300;
 const LOG_LINE_CAP = 8192;
 const LOG_QUEUE_CAP = 2_000_000; // bytes held while the disk is slow; beyond it lines are dropped and counted
@@ -203,6 +227,8 @@ type Job = {
   /** Characters dropped from the head of each stream once it passed OUTPUT_CAP_CHARS. */
   truncated: { stdout: number; stderr: number };
   sessionId?: string;
+  /** 8-char prefix of the MCP session that started it; keeps that session from being expired or evicted. */
+  owner?: string;
   kill?: () => void;
   timeoutMs: number;
   idleTimeoutMs: number;
@@ -277,6 +303,11 @@ function runProcess(
   cwd: string,
   opts: { timeoutMs?: number; idleTimeoutMs?: number; stdin?: string; env?: NodeJS.ProcessEnv } = {},
 ): Job {
+  const running = [...jobs.values()].filter((j) => j.status === "running").length;
+  if (running >= MAX_RUNNING_JOBS) {
+    logEvent("job_cap_hit", { level: "warn", kind, running, max_running_jobs: MAX_RUNNING_JOBS });
+    throw new Error(`Capacity exceeded: ${running} jobs already running (MAX_RUNNING_JOBS=${MAX_RUNNING_JOBS}). Wait for one to finish or cancel one with cancel_job, then retry.`);
+  }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const idleTimeoutMs = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
   const job: Job = {
@@ -292,6 +323,7 @@ function runProcess(
     timeoutMs,
     idleTimeoutMs,
     lastActivity: Date.now(),
+    owner: reqCtx.getStore()?.session ?? undefined,
   };
   evictJobs();
   jobs.set(job.id, job);
@@ -664,7 +696,18 @@ function buildServer(): McpServer {
           let firstPrompt = "";
           let cwd = "";
           try {
-            const head = (await fs.readFile(fp, "utf8")).split("\n").slice(0, 40);
+            const fh = await fs.open(fp, "r");
+            let head: string[];
+            try {
+              const want = Math.min(st.size, HEAD_BYTES);
+              const buf = Buffer.alloc(want);
+              const { bytesRead } = await fh.read(buf, 0, want, 0);
+              head = buf.subarray(0, bytesRead).toString("utf8").split("\n");
+              if (st.size > want) head.pop(); // the last line is cut mid-way
+            } finally {
+              await fh.close();
+            }
+            head = head.slice(0, 40);
             for (const line of head) {
               try {
                 const o = JSON.parse(line);
@@ -696,7 +739,7 @@ function buildServer(): McpServer {
     "get_session_transcript",
     {
       title: "Read a session transcript",
-      description: "Return the most recent N messages (user/assistant text) from a Claude Code session's JSONL log.",
+      description: `Return the most recent N messages (user/assistant text) from a Claude Code session's JSONL log. Reads only the last ${TAIL_BYTES} bytes of the file, so on a very long session fewer than N messages may come back.`,
       inputSchema: {
         session_id: z.string().regex(SESSION_ID_RE, "session_id must be a UUID"),
         project: z.string().optional().describe("Project path (speeds lookup). Omit to search all."),
@@ -709,8 +752,8 @@ function buildServer(): McpServer {
       for (const d of candidates) {
         const fp = path.join(root, d, `${session_id}.jsonl`);
         try {
-          const msgs = (await fs.readFile(fp, "utf8")).trim().split("\n").map(transcriptEvent).filter(Boolean);
-          return text({ session_id, project_dir_key: d, messages: msgs.slice(-last_n) });
+          const t = await tailTranscript(fp, last_n);
+          return text({ session_id, project_dir_key: d, messages: t.events, transcript_bytes: t.transcript_bytes, tail_bytes_read: t.tail_bytes_read });
         } catch {}
       }
       return text({ error: `Session ${session_id} not found` });
@@ -893,8 +936,8 @@ function buildServer(): McpServer {
     "read_file",
     {
       title: "Read a file from a project",
-      description: `Read a file inside PROJECTS_ROOT. Text files are returned as UTF-8 text (truncated to max_bytes). PNG, JPEG, GIF and WebP images (detected by magic bytes) are returned whole as an MCP image content block instead — never truncated — up to ${MAX_IMAGE_BYTES} bytes (env-overridable via MAX_IMAGE_BYTES); a larger image is refused with a clear error rather than returned corrupt.`,
-      inputSchema: { path: z.string().describe("Relative to PROJECTS_ROOT or absolute within it"), max_bytes: z.number().int().default(100_000) },
+      description: `Read a file inside PROJECTS_ROOT. Text files are returned as UTF-8 text (truncated to max_bytes, at most ${MAX_READ_BYTES} — env-overridable via MAX_READ_BYTES). PNG, JPEG, GIF and WebP images (detected by magic bytes) are returned whole as an MCP image content block instead — never truncated — up to ${MAX_IMAGE_BYTES} bytes (env-overridable via MAX_IMAGE_BYTES); a larger image is refused with a clear error rather than returned corrupt.`,
+      inputSchema: { path: z.string().describe("Relative to PROJECTS_ROOT or absolute within it"), max_bytes: z.number().int().max(MAX_READ_BYTES).default(Math.min(100_000, MAX_READ_BYTES)) },
     },
     async ({ path: p, max_bytes }) => {
       const fp = safeProjectPath(p);
@@ -914,7 +957,7 @@ function buildServer(): McpServer {
           }
           return { content: [{ type: "image" as const, data: (await readAt(size)).toString("base64"), mimeType }] };
         }
-        return text((await readAt(Math.max(0, max_bytes))).toString("utf8"));
+        return text((await readAt(Math.min(Math.max(0, max_bytes), MAX_READ_BYTES))).toString("utf8"));
       } finally {
         await fh.close();
       }
@@ -1087,7 +1130,36 @@ app.use("/mcp", async (req, res, next) => {
 app.use("/mcp", express.json({ limit: "4mb" }));
 
 const transports = new Map<string, StreamableHTTPServerTransport>();
-const sessionMeta = new Map<string, { createdAt: number; requests: number; closeReason?: string }>();
+const sessionMeta = new Map<string, { createdAt: number; requests: number; closeReason?: string; lastSeen: number; open: number }>();
+
+/** Mark a session busy for the life of this request (an SSE GET stays open until the client leaves). */
+function trackSession(sid: string, res: express.Response) {
+  const m = sessionMeta.get(sid);
+  if (!m) return;
+  m.open++;
+  m.lastSeen = Date.now();
+  res.on("close", () => { m.open--; m.lastSeen = Date.now(); });
+}
+
+/** Never expire or evict a session with a request or stream open, or a running job it started. */
+function sessionBusy(sid: string, m: { open: number }) {
+  if (m.open > 0) return true;
+  const p = sessionPrefix(sid);
+  return [...jobs.values()].some((j) => j.status === "running" && j.owner === p);
+}
+
+function closeSession(sid: string, reason: string) {
+  const m = sessionMeta.get(sid);
+  if (m) m.closeReason = reason;
+  transports.get(sid)?.close().catch(() => {}); // onclose does the bookkeeping and logs session_closed
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, m] of sessionMeta) {
+    if (now - m.lastSeen >= SESSION_IDLE_MS && !sessionBusy(sid, m)) closeSession(sid, "idle_expired");
+  }
+}, Math.min(60_000, Math.max(1000, SESSION_IDLE_MS / 4))).unref();
 
 app.post("/mcp", async (req, res) => {
   markRouted(res);
@@ -1108,11 +1180,23 @@ app.post("/mcp", async (req, res) => {
       res.status(400).json({ jsonrpc: "2.0", error: { code: -32000, message: "Bad request: no valid session" }, id: null });
       return;
     }
+    if (transports.size >= MAX_SESSIONS) {
+      // Make room by dropping the longest-idle session that is doing nothing; refuse only if all are busy.
+      // ponytail: concurrent initialises can overshoot the cap by a few; the idle sweep trims them.
+      const victim = [...sessionMeta].filter(([id, m]) => !sessionBusy(id, m)).sort((a, b) => a[1].lastSeen - b[1].lastSeen)[0];
+      logEvent("session_cap_hit", { level: "warn", active_sessions: transports.size, max_sessions: MAX_SESSIONS, evicting: !!victim });
+      if (!victim) {
+        setReject(res, "session_cap");
+        res.status(503).json({ jsonrpc: "2.0", error: { code: -32000, message: "Capacity exceeded: too many open sessions" }, id: null });
+        return;
+      }
+      closeSession(victim[0], "evicted_cap");
+    }
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
         transports.set(id, transport!);
-        sessionMeta.set(id, { createdAt: Date.now(), requests: 0 });
+        sessionMeta.set(id, { createdAt: Date.now(), requests: 0, lastSeen: Date.now(), open: 0 });
         const rec = recOf(res);
         if (rec) rec.sessionNew = sessionPrefix(id) ?? undefined;
         logEvent("session_created", {
@@ -1135,7 +1219,7 @@ app.post("/mcp", async (req, res) => {
     };
     await buildServer().connect(transport);
   }
-  if (sid) { const m = sessionMeta.get(sid); if (m) m.requests++; }
+  if (sid) { const m = sessionMeta.get(sid); if (m) m.requests++; trackSession(sid, res); }
   const rec = recOf(res);
   await (rec ? reqCtx.run(rec, () => transport!.handleRequest(req, res, req.body)) : transport.handleRequest(req, res, req.body));
 });
@@ -1147,7 +1231,7 @@ const handleSessionReq = async (req: express.Request, res: express.Response) => 
   const t = transports.get(sid);
   if (!t) { setReject(res, "unknown_session"); res.status(404).send("Session not found"); return; }
   const meta = sessionMeta.get(sid);
-  if (meta) { meta.requests++; if (req.method === "DELETE") meta.closeReason = "client_delete"; }
+  if (meta) { meta.requests++; if (req.method === "DELETE") meta.closeReason = "client_delete"; trackSession(sid, res); }
   const rec = recOf(res);
   await (rec ? reqCtx.run(rec, () => t.handleRequest(req, res)) : t.handleRequest(req, res));
 };
@@ -1174,7 +1258,8 @@ const server = app.listen(PORT, HOST, () => {
   logEvent("server_start", {
     pid: process.pid, node: process.version, port: PORT, host: HOST, auth: AUTH_MODE === "bearer" ? (AUTH_TOKEN ? "bearer" : "none") : AUTH_MODE,
     max_wait_seconds: MAX_WAIT_SECONDS, default_timeout_ms: DEFAULT_TIMEOUT_MS, idle_timeout_ms: IDLE_TIMEOUT_MS,
-    kill_grace_ms: KILL_GRACE_MS, log_file: LOG_FILE, log_max_bytes: LOG_MAX_BYTES, log_keep: LOG_KEEP,
+    kill_grace_ms: KILL_GRACE_MS, max_running_jobs: MAX_RUNNING_JOBS, max_sessions: MAX_SESSIONS,
+    session_idle_ms: SESSION_IDLE_MS, max_read_bytes: MAX_READ_BYTES, log_file: LOG_FILE, log_max_bytes: LOG_MAX_BYTES, log_keep: LOG_KEEP,
     // Read, never set: these are Node's own values, logged so a drop can be compared against them.
     keep_alive_timeout_ms: server.keepAliveTimeout, headers_timeout_ms: server.headersTimeout,
     request_timeout_ms: server.requestTimeout,

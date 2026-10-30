@@ -924,6 +924,12 @@ docker cp "$REPO_ROOT/test/connector_hardening_check.py" "$NAME:/tmp/connector_h
 check "connector hardening: child env stripped of its own secrets, auth before body parse, generic errors, constant-time auth, minimal /healthz, output cap and job eviction, bounded read_file, UUID-only session ids, symlink containment, prompt after --" \
   docker exec "$NAME" python3 /tmp/connector_hardening_check.py
 
+# Resource limits (0.38): strict numeric env parsing, job/session caps, idle expiry,
+# bounded read_file and transcript reads; spawns its own connectors (connector_limits_check.py).
+docker cp "$REPO_ROOT/test/connector_limits_check.py" "$NAME:/tmp/connector_limits_check.py" >/dev/null 2>&1
+check "connector limits: bad numeric env fails startup, running-job cap, session cap and idle expiry (sparing running jobs and open streams), bounded read_file/transcript reads" \
+  docker exec "$NAME" python3 /tmp/connector_limits_check.py
+
 # Phase 2 (0.37): AUTH_MODE access|both|bearer against a local JWKS server
 # (connector_access_check.mjs); jose resolves from the image's connector install.
 docker cp "$REPO_ROOT/test/connector_access_check.mjs" "$NAME:/tmp/connector_access_check.mjs" >/dev/null 2>&1
