@@ -140,7 +140,13 @@ can silently change installed tool versions if the image changed.
   deny list is **not** a control on `run_command`; the bearer token is.
 - **Hardening (0.36; takes effect only after a force-update, since it is an image change).**
   Children (`run_command`, `claude -p`) no longer inherit `CONNECTOR_TOKEN` or
-  `USAGE_COLLECTOR_TOKEN` (nor `NODE_ENV`, which would flip their builds into production mode); they still get `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
+  `USAGE_COLLECTOR_TOKEN` (nor `NODE_ENV`, which would flip their builds into production mode).
+  **That strip is hygiene, not a security boundary.** Children run as root in the same PID
+  namespace, so any of them can read `/proc/$PPID/environ` (or `/proc/1/environ`) and recover
+  the token; anyone past auth is root in the container with the Docker socket, which is root on
+  the host. The strip only stops *accidental* leakage (a child that dumps its env, a build that
+  logs it). It is a three-name deny-list, so every other variable reaches children. See
+  "Follow-ups" below. They still get `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
   `CUSTOM_API_KEY` and `OPENROUTER_API_KEY`, which they need. Bearer auth runs *before* the
   body is parsed and compares in constant time; parse/size errors return a generic JSON-RPC
   error with no stack; `X-Powered-By` is off; `/healthz` returns only `{"ok":true}`; the
@@ -151,8 +157,18 @@ can silently change installed tool versions if the image changed.
   never a running one, so `list_jobs` recovery still covers a day. `read_file` reads only
   `max_bytes`; `get_session_transcript` accepts UUID session ids only; `safeProjectPath`
   resolves symlinks (a link out of `PROJECTS_ROOT` is refused; a swap between check and use
-  is not caught). The prompt is passed after `--`. `test/connector_hardening_check.py` guards
-  all of it.
+  is not caught). The prompt is passed after `--`. Since 0.38, values that land in option-value
+  position are validated first: `continue_session.session_id` must be a UUID, `model` must match
+  `[A-Za-z0-9._:/[\]-]` and not start with `-`, no `allowed_tools` entry may start with `-`, and
+  `append_system_prompt` is passed as `--append-system-prompt=<value>`. A bad value is a tool
+  error and `claude` is never spawned. `test/connector_hardening_check.py` guards all of it.
+- **Follow-ups (not done; each is a larger change that risks breaking arbitrary children).**
+  To make the child boundary real: (1) run children as an unprivileged user (needs the Docker
+  socket and `/projects` ownership sorted out first); (2) build the child env from an allow-list
+  instead of a deny-list; (3) give children a separate PID namespace (or hidepid `/proc`) so the
+  connector's `/proc/<pid>/environ` is unreadable. None helps while children keep the Docker
+  socket, which is root on the host anyway; the auth layers in front of the connector remain the
+  whole boundary.
 - Session state is **in-memory only**. A connector restart (image update, container restart)
   wipes every session id it knew about. As of v0.21, a request carrying an unknown/expired
   `Mcp-Session-Id` gets **HTTP 404** (not 400), which is what makes a spec-compliant client
