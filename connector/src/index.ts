@@ -80,7 +80,7 @@ const OUTPUT_CAP_CHARS = envInt("OUTPUT_CAP_BYTES", 1_000_000);
 // a day covers an overnight run being checked the next morning, and 200 bounds
 // the heap (worst case ~2 MB each) when a busy day produces many short jobs.
 const JOB_RETENTION_MS = envInt("JOB_RETENTION_MS", 24 * 3600_000);
-const MAX_FINISHED_JOBS = envInt("MAX_FINISHED_JOBS", 200, 0)
+const MAX_FINISHED_JOBS = envInt("MAX_FINISHED_JOBS", 200, 0);
 // Resource caps (0.38). Generous for one owner running several chats and scheduled tasks at once;
 // they bound a runaway caller, not normal use. A job or session over its cap is refused with a
 // clear error rather than queued. read_file's text cap is a hard ceiling on max_bytes.
@@ -90,14 +90,16 @@ const MAX_SESSIONS = envInt("MAX_SESSIONS", 64);
 const SESSION_IDLE_MS = envInt("SESSION_IDLE_MS", 24 * 3600_000);
 const MAX_READ_BYTES = envInt("MAX_READ_BYTES", 1_000_000);
 // list_sessions only needs the first prompt and cwd, which sit in the first few lines.
-const HEAD_BYTES = 64_000;;
+const HEAD_BYTES = 64_000;
 // Credentials the connector holds for itself. Children (run_command, `claude -p`)
 // must never inherit them: a command could print them into a transcript.
 // Deliberately NOT stripped, because children need them: CLAUDE_CODE_OAUTH_TOKEN
 // (`claude -p` auth), GH_TOKEN (git/gh), CUSTOM_API_KEY / OPENROUTER_API_KEY (PAL).
 // NODE_ENV is the connector's own runtime mode (entrypoint sets production); left in,
 // it would make every child's `npm install` skip devDependencies and flip build modes.
-const CHILD_ENV_STRIP = ["CONNECTOR_TOKEN", "USAGE_COLLECTOR_TOKEN", "NODE_ENV"];
+// AUTH_MODE / ACCESS_*: not secret, but a child that starts a test connector would inherit the
+// parent's auth mode and fail its checks (seen in the 0.38 work), so keep children neutral.
+const CHILD_ENV_STRIP = ["CONNECTOR_TOKEN", "USAGE_COLLECTOR_TOKEN", "NODE_ENV", "AUTH_MODE", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "ACCESS_ALLOWED_EMAILS"];
 const childEnv = (extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const env = { ...process.env, ...extra };
   for (const k of CHILD_ENV_STRIP) delete env[k];

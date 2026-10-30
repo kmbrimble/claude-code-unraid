@@ -224,11 +224,20 @@ try:
     conn.getresponse()
     s4 = start_session()  # cap hit: evicts the longest-idle non-busy session, which is s2 (s1 is busy)
     check("over MAX_SESSIONS the longest-idle non-busy session is evicted", not alive(s2))
+    # The log is written off the request path, so give it a moment to land.
+    for _ in range(40):
+        if any(e["event"] == "session_cap_hit" for e in log_events()):
+            break
+        time.sleep(0.1)
     check("session_cap_hit is logged", any(e["event"] == "session_cap_hit" for e in log_events()))
     time.sleep(5)  # SESSION_IDLE_MS is 3 s; none of s1, s3, s4 has been touched since
     check("an idle session with no job or stream is expired", http("POST", "/mcp", {"mcp-session-id": s4}, {"jsonrpc": "2.0", "id": 1, "method": "ping"}, TOKEN)[0] == 404)
     check("a session with a running job survives idle expiry", alive(s1))
     check("a session with an open stream survives idle expiry", alive(s3))
+    for _ in range(40):
+        if any(e.get("reason") == "idle_expired" for e in log_events()):
+            break
+        time.sleep(0.1)
     check("idle_expired is logged as a close reason", any(e.get("reason") == "idle_expired" for e in log_events()))
 finally:
     if conn:
