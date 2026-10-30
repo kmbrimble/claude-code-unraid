@@ -104,12 +104,15 @@ try {
   const logTxt = readFileSync(a.log, "utf8");
   check("access: req_end logs the authenticated email", logTxt.split("\n").some((l) => l.includes('"req_end"') && l.includes('"auth_email":"kieren@example.com"')));
   check("access: log never contains the JWT", !logTxt.includes(jwt.split(".")[2]));
+  check("access: expired JWT logged with a fixed reason code", logTxt.includes('"reject_reason":"access_jwt:ERR_JWT_EXPIRED"'));
   stop(a);
 
   // ---- email allowlist
   const al = await start({ ...ACC, ACCESS_ALLOWED_EMAILS: "Kieren@Example.com, other@example.com" });
   check("allowlist: listed email (case-insensitive) accepted", (await post(al, { [H]: await sign(k1) })) === 200);
   check("allowlist: unlisted email -> 401", (await post(al, { [H]: await sign(k1, {}, { email: "mallory@example.com" }) })) === 401);
+  await new Promise((r) => setTimeout(r, 300));
+  check("allowlist: denial logged as access_email_denied", readFileSync(al.log, "utf8").includes('"reject_reason":"access_email_denied"'));
   check("allowlist: no email claim -> 401", (await post(al, { [H]: await sign(k1, {}, { email: undefined }) })) === 401);
   stop(al);
 

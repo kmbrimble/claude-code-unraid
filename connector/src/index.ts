@@ -32,7 +32,7 @@ const AUTH_MODE = process.env.AUTH_MODE ?? "bearer";
 const ACCESS_TEAM_DOMAIN = (process.env.ACCESS_TEAM_DOMAIN ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
 const ACCESS_AUD = (process.env.ACCESS_AUD ?? "").trim();
 const ACCESS_ALLOWED_EMAILS = (process.env.ACCESS_ALLOWED_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
-// Test seam only: the real JWKS URL is always derived from the team domain.
+// Unvalidated override, used by the test harness; normally derived from the team domain.
 const ACCESS_JWKS_URL = process.env.ACCESS_JWKS_URL || `https://${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`;
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const PROJECTS_ROOT = path.resolve(process.env.PROJECTS_ROOT ?? "/workspace");
@@ -1054,16 +1054,17 @@ const AUTH_DIGEST = digest(`Bearer ${AUTH_TOKEN}`);
 // jose caches the key set and refetches on an unknown kid, at most once per cooldown.
 const accessJwks = AUTH_MODE === "bearer" ? null : createRemoteJWKSet(new URL(ACCESS_JWKS_URL), { cooldownDuration: envInt("ACCESS_JWKS_COOLDOWN_MS", 30_000), cacheMaxAge: 600_000 });
 
-/** Cloudflare Access JWT: signature (team JWKS), iss, aud, exp/nbf, optional email allowlist. Returns the email, or null. */
-async function verifyAccessJwt(token: string): Promise<string | null> {
+/** Cloudflare Access JWT: signature (team JWKS), iss, aud, exp/nbf, optional email allowlist.
+ *  Returns { email } or { reject }; reject is a fixed code (jose error code), never a claim value. */
+async function verifyAccessJwt(token: string): Promise<{ email: string } | { reject: string }> {
   try {
     const { payload } = await jwtVerify(token, accessJwks!, {
       issuer: `https://${ACCESS_TEAM_DOMAIN}`, audience: ACCESS_AUD, algorithms: ["RS256"], clockTolerance: 5,
     });
     const email = typeof payload.email === "string" ? payload.email.toLowerCase() : "";
-    if (ACCESS_ALLOWED_EMAILS.length && !ACCESS_ALLOWED_EMAILS.includes(email)) return null;
-    return email || "(none)";
-  } catch { return null; }
+    if (ACCESS_ALLOWED_EMAILS.length && !ACCESS_ALLOWED_EMAILS.includes(email)) return { reject: "access_email_denied" };
+    return { email: email || "(none)" };
+  } catch (e: any) { return { reject: `access_jwt:${/^[A-Z_]{3,60}$/.test(e?.code ?? "") ? e.code : e?.name === "TypeError" ? "fetch_failed" : "invalid"}` }; }
 }
 
 // Auth runs BEFORE the body is parsed, so an unauthenticated caller costs a
@@ -1075,9 +1076,9 @@ app.use("/mcp", async (req, res, next) => {
   if (AUTH_MODE !== "access" && timingSafeEqual(digest(h), AUTH_DIGEST)) return next();
   const jwt = AUTH_MODE === "bearer" ? "" : req.header("cf-access-jwt-assertion") ?? "";
   if (jwt) {
-    const email = await verifyAccessJwt(jwt);
-    if (email) { const r = recOf(res); if (r) r.email = email; return next(); }
-    setReject(res, "bad_access_jwt");
+    const v = await verifyAccessJwt(jwt);
+    if ("email" in v) { const r = recOf(res); if (r) r.email = v.email; return next(); }
+    setReject(res, v.reject);
   } else {
     setReject(res, AUTH_MODE === "bearer" ? (h ? "bad_bearer" : "missing_bearer") : h && AUTH_MODE === "both" ? "bad_bearer" : "missing_access_jwt");
   }
