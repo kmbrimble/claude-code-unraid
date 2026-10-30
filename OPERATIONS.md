@@ -135,8 +135,24 @@ can silently change installed tool versions if the image changed.
   the Docker socket — this is effectively root on the unRAID box. Treat any credential that
   reaches this connector as a full host compromise if leaked.
 - The `~/.claude/settings.json` permission deny list (destructive `docker`/`rm`/`mkfs`/`dd`
-  commands) still applies to commands run through the connector, same as an interactive
-  session — it is not bypassed by `run_command`.
+  commands) applies to **Claude jobs only** (`start_session` / `continue_session`, which run
+  `claude -p`). `run_command` is a direct `bash -lc` spawn that never consults it, so the
+  deny list is **not** a control on `run_command`; the bearer token is.
+- **Hardening (0.36; takes effect only after a force-update, since it is an image change).**
+  Children (`run_command`, `claude -p`) no longer inherit `CONNECTOR_TOKEN` or
+  `USAGE_COLLECTOR_TOKEN`; they still get `CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN`,
+  `CUSTOM_API_KEY` and `OPENROUTER_API_KEY`, which they need. Bearer auth runs *before* the
+  body is parsed and compares in constant time; parse/size errors return a generic JSON-RPC
+  error with no stack; `X-Powered-By` is off; `/healthz` returns only `{"ok":true}`; the
+  entrypoint runs the connector with `NODE_ENV=production` and keeps
+  `~/claude-code-connector.log` at 0600. Per job, stdout and stderr keep only their last
+  `OUTPUT_CAP_BYTES` (1 MB; the result reports `stdout_truncated_chars`), and finished jobs are
+  evicted after `JOB_RETENTION_MS` (24 h) or beyond the newest `MAX_FINISHED_JOBS` (200),
+  never a running one, so `list_jobs` recovery still covers a day. `read_file` reads only
+  `max_bytes`; `get_session_transcript` accepts UUID session ids only; `safeProjectPath`
+  resolves symlinks (a link out of `PROJECTS_ROOT` is refused; a swap between check and use
+  is not caught). The prompt is passed after `--`. `test/connector_hardening_check.py` guards
+  all of it.
 - Session state is **in-memory only**. A connector restart (image update, container restart)
   wipes every session id it knew about. As of v0.21, a request carrying an unknown/expired
   `Mcp-Session-Id` gets **HTTP 404** (not 400), which is what makes a spec-compliant client

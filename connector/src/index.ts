@@ -7,9 +7,9 @@
  * commands, and poll long-running jobs.
  */
 import express from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, promises as fs } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync, promises as fs } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import type { Socket } from "node:net";
@@ -46,6 +46,26 @@ const TAIL_BYTES = 256_000;
 // truncated — a truncated image is corrupt). A few MB comfortably covers a
 // screenshot; env-overridable for the rare larger asset.
 const MAX_IMAGE_BYTES = Number(process.env.MAX_IMAGE_BYTES ?? 5_000_000);
+// A job keeps only the tail of each output stream, so one chatty command cannot
+// grow the connector's heap without bound. 1 MB is far more than any caller can
+// read back (summariseJob returns the last 20k); the dropped count is reported.
+const OUTPUT_CAP_CHARS = Number(process.env.OUTPUT_CAP_BYTES ?? 1_000_000);
+// Finished jobs are kept so list_jobs can recover a call the client abandoned:
+// a day covers an overnight run being checked the next morning, and 200 bounds
+// the heap (worst case ~2 MB each) when a busy day produces many short jobs.
+const JOB_RETENTION_MS = Number(process.env.JOB_RETENTION_MS ?? 24 * 3600_000);
+const MAX_FINISHED_JOBS = Number(process.env.MAX_FINISHED_JOBS ?? 200);
+// Credentials the connector holds for itself. Children (run_command, `claude -p`)
+// must never inherit them: a command could print them into a transcript.
+// Deliberately NOT stripped, because children need them: CLAUDE_CODE_OAUTH_TOKEN
+// (`claude -p` auth), GH_TOKEN (git/gh), CUSTOM_API_KEY / OPENROUTER_API_KEY (PAL).
+const CHILD_ENV_STRIP = ["CONNECTOR_TOKEN", "USAGE_COLLECTOR_TOKEN"];
+const childEnv = (extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const env = { ...process.env, ...extra };
+  for (const k of CHILD_ENV_STRIP) delete env[k];
+  return env;
+};
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
 // Structured log (JSON Lines)
@@ -166,6 +186,8 @@ type Job = {
   exitCode?: number | null;
   stdout: string;
   stderr: string;
+  /** Characters dropped from the head of each stream once it passed OUTPUT_CAP_CHARS. */
+  truncated: { stdout: number; stderr: number };
   sessionId?: string;
   kill?: () => void;
   timeoutMs: number;
@@ -186,10 +208,36 @@ type ToolRec = { job?: Job; clamped?: boolean };
 const toolCtx = new AsyncLocalStorage<ToolRec>();
 const noteJob = (job: Job | undefined) => { const t = toolCtx.getStore(); if (t && job) t.job = job; };
 
+const within = (root: string, p: string) => p === root || p.startsWith(root + path.sep);
+const PROJECTS_ROOT_REAL = (() => { try { return realpathSync(PROJECTS_ROOT); } catch { return PROJECTS_ROOT; } })();
+
+/** realpath of the deepest existing ancestor, with the not-yet-created tail re-appended. */
+function realpathLoose(abs: string): string {
+  const tail: string[] = [];
+  for (let cur = abs; ; cur = path.dirname(cur)) {
+    try { return path.join(realpathSync(cur), ...tail.reverse()); } catch (e: any) {
+      if (e?.code !== "ENOENT" && e?.code !== "ENOTDIR") throw e;
+      if (path.dirname(cur) === cur) return abs;
+      tail.push(path.basename(cur));
+    }
+  }
+}
+
+// ponytail: a symlink swapped in between this check and the use is not caught
+// (TOCTOU); closing that needs openat-style handling, which Node lacks.
 function safeProjectPath(p: string): string {
   const abs = path.resolve(PROJECTS_ROOT, p);
-  if (abs !== PROJECTS_ROOT && !abs.startsWith(PROJECTS_ROOT + path.sep)) throw new Error(`Path escapes PROJECTS_ROOT: ${p}`);
+  if (!within(PROJECTS_ROOT, abs) || !within(PROJECTS_ROOT_REAL, realpathLoose(abs))) throw new Error(`Path escapes PROJECTS_ROOT: ${p}`);
   return abs;
+}
+
+/** Drop finished jobs past the retention period, then the oldest beyond MAX_FINISHED_JOBS. Never touches a running job. */
+function evictJobs() {
+  const cutoff = Date.now() - JOB_RETENTION_MS;
+  const finished = [...jobs.values()].filter((j) => j.status !== "running");
+  for (const j of finished) if (Date.parse(j.finishedAt ?? j.startedAt) < cutoff) jobs.delete(j.id);
+  const kept = finished.filter((j) => jobs.has(j.id));
+  for (const j of kept.slice(0, Math.max(0, kept.length - MAX_FINISHED_JOBS))) jobs.delete(j.id);
 }
 
 // Detected by magic bytes, not extension — an extension is at most a
@@ -226,17 +274,19 @@ function runProcess(
     status: "running",
     stdout: "",
     stderr: "",
+    truncated: { stdout: 0, stderr: 0 },
     timeoutMs,
     idleTimeoutMs,
     lastActivity: Date.now(),
   };
+  evictJobs();
   jobs.set(job.id, job);
   noteJob(job);
 
   // detached: the child leads its own process group, so a kill reaches its
   // grandchildren too. Without it, killing `bash -lc` orphans the real work,
   // which keeps running AND holds the stdout pipe open so `close` never fires.
-  const child = spawn(cmd, args, { cwd, env: { ...process.env, ...opts.env }, shell: false, detached: true });
+  const child = spawn(cmd, args, { cwd, env: childEnv(opts.env), shell: false, detached: true });
   const alive = () => child.exitCode === null && child.signalCode === null;
   const signalGroup = (sig: NodeJS.Signals) => {
     try { if (child.pid) process.kill(-child.pid, sig); } catch { try { child.kill(sig); } catch {} }
@@ -254,6 +304,10 @@ function runProcess(
 
   const onOutput = (stream: "stdout" | "stderr") => (d: Buffer) => {
     job[stream] += d.toString();
+    if (job[stream].length > OUTPUT_CAP_CHARS) {
+      job.truncated[stream] += job[stream].length - OUTPUT_CAP_CHARS;
+      job[stream] = job[stream].slice(-OUTPUT_CAP_CHARS);
+    }
     job.lastActivity = Date.now();
   };
   child.stdout.on("data", onOutput("stdout"));
@@ -452,6 +506,8 @@ function summariseJob(job: Job, truncate = 20_000) {
     num_turns: parsed?.num_turns,
     stdout: parsed ? undefined : job.stdout.slice(-truncate),
     stderr: job.stderr.slice(-truncate) || undefined,
+    stdout_truncated_chars: job.truncated.stdout || undefined,
+    stderr_truncated_chars: job.truncated.stderr || undefined,
     timeout: timeoutInfo(job),
   };
 }
@@ -490,7 +546,7 @@ function claudeArgs(o: {
   if (o.systemPrompt) a.push("--append-system-prompt", o.systemPrompt);
   if (o.permissionMode) a.push("--permission-mode", o.permissionMode);
   else if (SKIP_PERMISSIONS) a.push("--dangerously-skip-permissions");
-  a.push(o.prompt);
+  a.push("--", o.prompt); // so a prompt starting with "-" can never be read as a flag
   return a;
 }
 
@@ -628,7 +684,7 @@ function buildServer(): McpServer {
       title: "Read a session transcript",
       description: "Return the most recent N messages (user/assistant text) from a Claude Code session's JSONL log.",
       inputSchema: {
-        session_id: z.string(),
+        session_id: z.string().regex(SESSION_ID_RE, "session_id must be a UUID"),
         project: z.string().optional().describe("Project path (speeds lookup). Omit to search all."),
         last_n: z.number().int().min(1).max(200).default(30),
       },
@@ -788,7 +844,7 @@ function buildServer(): McpServer {
       description: "List all jobs known to this connector (running and finished), with each job's own deadline, plus the connector-wide wait/timeout settings. This is the recovery path after a blocking call was cut short by the client.",
       inputSchema: {},
     },
-    async () => text({
+    async () => (evictJobs(), text({
       settings: {
         max_wait_seconds: MAX_WAIT_SECONDS,
         default_timeout_seconds: DEFAULT_TIMEOUT_MS / 1000,
@@ -800,7 +856,7 @@ function buildServer(): McpServer {
         started_at: j.startedAt, finished_at: j.finishedAt, ...jobDeadlines(j),
         command: j.command.slice(0, 200),
       })),
-    }),
+    })),
   );
 
   server.registerTool(
@@ -828,15 +884,26 @@ function buildServer(): McpServer {
     },
     async ({ path: p, max_bytes }) => {
       const fp = safeProjectPath(p);
-      const buf = await fs.readFile(fp);
-      const mimeType = detectImageMimeType(buf);
-      if (mimeType) {
-        if (buf.length > MAX_IMAGE_BYTES) {
-          throw new Error(`Image ${p} is ${buf.length} bytes, over the ${MAX_IMAGE_BYTES}-byte cap (MAX_IMAGE_BYTES)`);
+      // Never load more than needed: sniff the header, and only an image is read whole.
+      const fh = await fs.open(fp, "r");
+      try {
+        const { size } = await fh.stat();
+        const readAt = async (n: number) => {
+          const b = Buffer.alloc(Math.min(size, n));
+          const { bytesRead } = await fh.read(b, 0, b.length, 0);
+          return b.subarray(0, bytesRead);
+        };
+        const mimeType = detectImageMimeType(await readAt(16));
+        if (mimeType) {
+          if (size > MAX_IMAGE_BYTES) {
+            throw new Error(`Image ${p} is ${size} bytes, over the ${MAX_IMAGE_BYTES}-byte cap (MAX_IMAGE_BYTES)`);
+          }
+          return { content: [{ type: "image" as const, data: (await readAt(size)).toString("base64"), mimeType }] };
         }
-        return { content: [{ type: "image" as const, data: buf.toString("base64"), mimeType }] };
+        return text((await readAt(Math.max(0, max_bytes))).toString("utf8"));
+      } finally {
+        await fh.close();
       }
-      return text(buf.subarray(0, max_bytes).toString("utf8"));
     },
   );
 
@@ -960,17 +1027,25 @@ app.use((req, res, next) => {
   try { accessLog(req, res); } catch { logErrors++; }
   next();
 });
-app.use(express.json({ limit: "4mb" }));
+app.disable("x-powered-by");
 
-app.get("/healthz", (_req, res) => { markRouted(res); res.json({ ok: true, projects_root: PROJECTS_ROOT }); });
+app.get("/healthz", (_req, res) => { markRouted(res); res.json({ ok: true }); });
 
+// Compare digests, not the strings: timingSafeEqual needs equal lengths, and
+// hashing makes them equal without revealing the token's length.
+const digest = (s: string) => createHash("sha256").update(s).digest();
+const AUTH_DIGEST = digest(`Bearer ${AUTH_TOKEN}`);
+
+// Auth runs BEFORE the body is parsed, so an unauthenticated caller costs a
+// header comparison, not a 4 MB JSON parse.
 app.use("/mcp", (req, res, next) => {
   if (!AUTH_TOKEN) return next();
   const h = req.header("authorization") ?? "";
-  if (h === `Bearer ${AUTH_TOKEN}`) return next();
+  if (timingSafeEqual(digest(h), AUTH_DIGEST)) return next();
   setReject(res, h ? "bad_bearer" : "missing_bearer");
   res.status(401).json({ error: "unauthorized" });
 });
+app.use("/mcp", express.json({ limit: "4mb" }));
 
 const transports = new Map<string, StreamableHTTPServerTransport>();
 const sessionMeta = new Map<string, { createdAt: number; requests: number; closeReason?: string }>();
@@ -1040,15 +1115,19 @@ const handleSessionReq = async (req: express.Request, res: express.Response) => 
 app.get("/mcp", handleSessionReq);
 app.delete("/mcp", handleSessionReq);
 
-// After the routes, so it also sees body-parser failures. Records why and hands
-// the error straight on: Express's default handler still writes the response.
+// After the routes, so it also sees body-parser failures. Records why, then
+// answers with a fixed generic body: Express's default handler would print the
+// stack (and internal paths) outside production, and never says anything useful.
 app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const type = err?.type;
   try {
-    const type = err?.type;
     setReject(res, type === "entity.parse.failed" ? "body_parse_failed" : type === "entity.too.large" ? "body_too_large" : "handler_error");
     logEvent("http_error", { req_id: recOf(res)?.id, error: err?.name, error_type: type, error_code: err?.code });
   } catch {}
-  next(err);
+  if (res.headersSent) return next(err);
+  const [status, code, message] = type === "entity.too.large" ? [413, -32600, "Request too large"]
+    : type === "entity.parse.failed" ? [400, -32700, "Parse error"] : [500, -32603, "Internal error"];
+  res.status(status).json({ jsonrpc: "2.0", error: { code, message }, id: null });
 });
 
 const server = app.listen(PORT, HOST, () => {

@@ -146,7 +146,12 @@ mkdir -p "${ANDROID_SDK_ROOT}" "${GRADLE_USER_HOME}"
 # is true here (a container) and is scoped to this process only. Job state
 # is in-memory, so an image update/restart drops running jobs.
 if [ -n "${CONNECTOR_TOKEN:-}" ]; then
-  PORT=8765 HOST=0.0.0.0 PROJECTS_ROOT=/projects SKIP_PERMISSIONS=1 IS_SANDBOX=1 \
+  # The log can echo startup errors, so create it 0600 (a redirect keeps the
+  # mode of an existing file, hence the explicit chmod for the persisted one).
+  (umask 077; : >>"${HOME}/claude-code-connector.log")
+  chmod 600 "${HOME}/claude-code-connector.log"
+  # NODE_ENV=production: Express/Node stop printing stacks to clients.
+  NODE_ENV=production PORT=8765 HOST=0.0.0.0 PROJECTS_ROOT=/projects SKIP_PERMISSIONS=1 IS_SANDBOX=1 \
     node /opt/claude-code-connector/dist/index.js >"${HOME}/claude-code-connector.log" 2>&1 &
   echo "claude-code-connector started on port 8765 (bearer token required)."
 else

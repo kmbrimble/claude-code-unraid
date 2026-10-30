@@ -6,6 +6,20 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Connector Phase 1 hardening** (from a read-only audit, session f8d98df0).
+  Children no longer inherit `CONNECTOR_TOKEN` / `USAGE_COLLECTOR_TOKEN` (kept: `CLAUDE_CODE_OAUTH_TOKEN`,
+  `GH_TOKEN`, `CUSTOM_API_KEY`, `OPENROUTER_API_KEY`). Auth now runs before JSON parsing, compares via
+  `timingSafeEqual` on SHA-256 digests, errors return a generic body with no stack, `X-Powered-By` is off,
+  and the entrypoint sets `NODE_ENV=production`. `/healthz` returns only `{"ok":true}` (nothing relied on
+  `projects_root`). Per-job output is capped at the last 1 MB per stream with the dropped count reported;
+  finished jobs are evicted after 24 h or beyond the newest 200; `read_file` reads only `max_bytes`;
+  `get_session_transcript` takes UUIDs only; `safeProjectPath` resolves symlinks; the prompt follows `--`
+  (confirmed honoured by `claude`). `~/claude-code-connector.log` is created 0600. `npm update` within
+  ranges (MCP SDK 1.32.2, express 5.3.0, zod 4.6.7): `npm audit` reports 0 vulnerabilities. OPERATIONS.md §4
+  corrected: the deny list does not apply to `run_command`. New `test/connector_hardening_check.py`
+  (16 failures on the previous connector, none now), wired into `test/smoke.sh`. **Takes effect only
+  on the next image rebuild and force-update.**
+
 ## 0.35 (2026-10-27)
 
 - **Fixed the connector's transcript cross-feed, and the flaky idle-timeout smoke check it caused.**

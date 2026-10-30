@@ -916,6 +916,22 @@ docker cp "$REPO_ROOT/test/connector_image_check.py" "$NAME:/tmp/connector_image
 check "connector read_file: byte-identical image blocks for PNG/JPEG, unchanged text, oversized image rejected, path outside PROJECTS_ROOT still refused" \
   docker exec "$NAME" python3 /tmp/connector_image_check.py "$CONNECTOR_TOKEN" img-test
 
+# Phase 1 hardening (0.36): behavioural, against a second connector the checker
+# spawns itself (see connector_hardening_check.py), plus the two entrypoint
+# properties it cannot see: the started connector runs with NODE_ENV=production
+# and its log file is 0600.
+docker cp "$REPO_ROOT/test/connector_hardening_check.py" "$NAME:/tmp/connector_hardening_check.py" >/dev/null 2>&1
+check "connector hardening: child env stripped of its own secrets, auth before body parse, generic errors, constant-time auth, minimal /healthz, output cap and job eviction, bounded read_file, UUID-only session ids, symlink containment, prompt after --" \
+  docker exec "$NAME" python3 /tmp/connector_hardening_check.py
+check "entrypoint starts the connector with NODE_ENV=production" docker exec "$NAME" bash -c '
+  for p in /proc/[0-9]*; do
+    tr "\0" " " <"$p/cmdline" 2>/dev/null | grep -q "^node /opt/claude-code-connector/dist/index.js" || continue
+    tr "\0" "\n" <"$p/environ" | grep -qx NODE_ENV=production && exit 0
+  done
+  exit 1'
+check "connector log file is mode 0600" docker exec "$NAME" bash -c \
+  '[ "$(stat -c %a /root/claude-code-connector.log)" = 600 ]'
+
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
 if docker stop "$NAME" >/dev/null 2>&1; then
