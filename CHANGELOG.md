@@ -6,6 +6,19 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **PAL counsel model: GPT-5.6 Terra -> GPT-6.1 Terra** (OpenRouter `openai/gpt-6.1-terra`, listed 27 Oct 2026;
+  list price US$1/$5 per M tokens in/out against US$2/$12; same 1.05M context, 128K output and
+  parameter set; the same step-up above 272K prompt tokens). Template and docs only, no change to
+  `Dockerfile` or `entrypoint.sh`. `templates/claude-code.xml`: the OpenRouter key description now
+  names GPT-6.1 Terra, and the `OPENROUTER_ALLOWED_MODELS` default is
+  `openai/gpt-6.1-terra,openai/gpt-5.6-terra` (5.6 kept as a fallback). Earlier entries below still
+  say 5.6 because that is what ran at the time. **Not live from this commit:** the running host keeps
+  its own hand-edited template, so the committed copy is only picked up when the template is
+  next re-imported or edited by hand. The live container already uses 6.1 without a recreate:
+  `~/.claude/pal/run-pal.sh` (persisted mount) overrides `OPENROUTER_ALLOWED_MODELS`, and the
+  model is registered in `~/.claude/pal/openrouter_models.json`. The review skills and
+  `~/.claude/review-lib` were repointed on the persisted mount too, outside this repo.
+
 ## 0.38 (2026-10-30)
 
 - **Connector hardening from the 30 Oct security audit** (code-security-audit: scanners, 3 Sonnet + 1 Mythos passes, GPT-5.6 counsel, 72/76 dynamic checks passing against a loopback copy; no auth bypass found). Built on three branches in parallel and merged.
