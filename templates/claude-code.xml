@@ -15,7 +15,7 @@
   <Category>Productivity:</Category>
   <WebUI/>
   <TemplateURL/>
-  <Icon/>
+  <Icon>https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg</Icon>
   <ExtraParams>--restart=unless-stopped --add-host=claude.kiztigs.com:192.168.0.23</ExtraParams>
   <PostArgs/>
   <CPUset/>

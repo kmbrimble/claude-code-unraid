@@ -19,6 +19,12 @@ is only ever advanced manually. Newest at top.
   model is registered in `~/.claude/pal/openrouter_models.json`. The review skills and
   `~/.claude/review-lib` were repointed on the persisted mount too, outside this repo.
 
+- **Template icon.** `templates/claude-code.xml` gains the `<Icon>` URL (the Claude symbol) that the
+  host's dockerMan copy already used. The rest of the host's hand-edited template was reviewed and
+  deliberately not merged: site-specific mounts and values stay out of the committed template
+  (OPERATIONS.md, "Site-specific mounts, not template entries"; 0.33), and this repo is public.
+  The host's `WebUI` entry is stale (it still names the removed `ttyd` port) and was not carried over.
+
 ## 0.38 (2026-10-30)
 
 - **Connector hardening from the 30 Oct security audit** (code-security-audit: scanners, 3 Sonnet + 1 Mythos passes, GPT-5.6 counsel, 72/76 dynamic checks passing against a loopback copy; no auth bypass found). Built on three branches in parallel and merged.
