@@ -150,6 +150,7 @@ check "tmux present" docker exec "$NAME" tmux -V
 check "php present" docker exec "$NAME" php -v
 check "php is the 8.4 line (matches the unRAID host)" bash -c "docker exec '$NAME' php -r 'exit(PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION === \"8.4\" ? 0 : 1);'"
 check "php has SimpleXML" docker exec "$NAME" php -r 'exit(function_exists("simplexml_load_string") ? 0 : 1);'
+check "xz present" docker exec "$NAME" xz --version
 # ttyd was removed in 0.29 (issue #19). It could only take its basic-auth
 # credential on the command line, so the password to a writable root shell was
 # readable in `ps`, in `docker inspect`, in the dockerMan template on the flash

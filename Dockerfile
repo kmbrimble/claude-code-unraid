@@ -193,10 +193,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `php-xml` provides SimpleXML, the one extension that repo's CI enables. 8.4 matches
 # the host and the top of that repo's CI matrix; CI and the host remain the source of
 # truth and this is for fast local iteration.
+# `xz-utils` is here because unraid-secretsman's test suite and scripts/build-plugin.sh
+# build a .txz package and need `xz` (no earlier image had it).
 # No composer, no web server, no extra extensions: add those when something needs
 # them. Kept as its own small layer so it never invalidates a heavy one above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      php-cli php-xml \
+      php-cli php-xml xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # ha-yaml-check: a PyYAML SafeLoader that tolerates Home Assistant's custom
