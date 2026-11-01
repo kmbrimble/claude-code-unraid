@@ -1,21 +1,22 @@
-FROM node:22-bookworm-slim
+FROM node:22-trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Docker CLI: this container only ever needs the CLIENT (it talks to the
 # unRAID host's much newer daemon over the mounted /var/run/docker.sock and
-# must never run its own daemon). Debian bookworm's `docker.io` ships a stale
-# 20.10 client that predates `docker compose`/`docker buildx` v2 plugin
-# syntax, so pull the client + plugins from Docker's own apt repo instead —
+# must never run its own daemon). Debian's `docker.io` once shipped a stale
+# 20.10 client (bookworm) that predated `docker compose`/`docker buildx` v2 plugin
+# syntax; the official repo also tracks the host's daemon, so pull the client +
+# plugins from Docker's own apt repo instead —
 # deliberately NOT `docker-ce`/`containerd.io`/`docker-ce-rootless-extras`,
 # which are the daemon.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tmux git curl ca-certificates python3 openssh-client jq procps \
-      openjdk-17-jdk-headless adb fastboot unzip \
+      openjdk-21-jdk-headless adb fastboot unzip \
     && mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
     && apt-get update && apt-get install -y --no-install-recommends \
       docker-ce-cli docker-compose-plugin docker-buildx-plugin \
     && rm -rf /var/lib/apt/lists/*
@@ -52,6 +53,21 @@ RUN mkdir -p /opt/android-cmdline-tools \
     && mv /opt/android-cmdline-tools/cmdline-tools /opt/android-cmdline-tools/latest \
     && rm /tmp/cmdline-tools.zip
 
+# Temurin 17 JDK, for Gradle projects that pin a Java 17 toolchain (WallPanel:
+# `java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }`). Debian
+# trixie ships only openjdk-21 and 25, and Gradle will not auto-provision without a
+# toolchain resolver, so the compile fails without this. Pinned release tarball,
+# SHA256 from Adoptium's published .sha256.txt for this exact asset, same pattern as
+# the scanners below. Placed under /usr/lib/jvm, one of Gradle's "Common Linux
+# Locations". JAVA_HOME and PATH stay on JDK 21.
+RUN set -eux; \
+    curl -fsSL -o /tmp/temurin17.tar.gz \
+      https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.21%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.21_9.tar.gz; \
+    echo "8b9b611d917e3dfd8419d3566b5949226f69b052fed7e109c1368add1dfe8711  /tmp/temurin17.tar.gz" | sha256sum -c -; \
+    mkdir -p /usr/lib/jvm/temurin-17-jdk-amd64; \
+    tar -xzf /tmp/temurin17.tar.gz -C /usr/lib/jvm/temurin-17-jdk-amd64 --strip-components=1; \
+    rm -f /tmp/temurin17.tar.gz
+
 # PAL MCP server: a non-Claude code-review advisor (consensus, codereview,
 # precommit, challenge) wired to AWS Bedrock ap-southeast-2 as an
 # OpenAI-compatible custom provider. Baked at /opt, NOT /root — same
@@ -69,7 +85,7 @@ RUN mkdir -p /opt/android-cmdline-tools \
 # mcp==1.29.1 explicitly) rather than resolved fresh, and the SHA-pinned
 # clone is installed separately, also --no-deps, since it's already exactly
 # what the lock file was generated against.
-RUN apt-get update && apt-get install -y --no-install-recommends python3.11-venv \
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
     && rm -rf /var/lib/apt/lists/*
 COPY pal-requirements.lock.txt /opt/pal-mcp/pal-requirements.lock.txt
 RUN git clone https://github.com/BeehiveInnovations/pal-mcp-server.git /opt/pal-mcp/src \
@@ -161,23 +177,22 @@ ENV SEMGREP_SEND_METRICS=off
 
 # Debian's python3-yaml/yamllint/python3-pip/python3-venv, for HA YAML linting
 # (issue #18) and to give the system Python a working pip3. Debian packages
-# rather than a pip install into system Python — bookworm's system Python is
+# rather than a pip install into system Python — Debian's system Python is
 # PEP 668 externally-managed, so a bare `pip3 install` outside a venv refuses
-# by default. python3.11-venv is already installed above for PAL's venv;
-# python3-venv is added anyway so `python3 -m venv` is unambiguously
-# guaranteed. Pillow/ImageMagick deliberately NOT installed: the issue calls
-# them minor with no acceptance criterion, so they don't earn the image
-# weight this round.
+# by default. python3-venv is already installed above for PAL's venv; it is
+# listed again so `python3 -m venv` is unambiguously guaranteed.
+# Pillow/ImageMagick deliberately NOT installed: the issue calls them minor with no
+# acceptance criterion, so they don't earn the image weight this round.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-yaml yamllint python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # PHP CLI, so Unraid plugin work in this container (unraid-secretsman's
 # `php tests/run.php`, `php -l`) can run its test suite here instead of only on
-# the unRAID host or in CI. Debian packages: `php-cli` is bookworm's 8.2 line and
-# `php-xml` provides SimpleXML, the one extension that repo's CI enables. 8.2 sits
-# between the 8.1 and 8.4 that repo's CI matrix covers; the host runs 8.4, so CI
-# and the host remain the source of truth and this is for fast local iteration.
+# the unRAID host or in CI. Debian packages: `php-cli` is trixie's 8.4 line and
+# `php-xml` provides SimpleXML, the one extension that repo's CI enables. 8.4 matches
+# the host and the top of that repo's CI matrix; CI and the host remain the source of
+# truth and this is for fast local iteration.
 # No composer, no web server, no extra extensions: add those when something needs
 # them. Kept as its own small layer so it never invalidates a heavy one above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -193,10 +208,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scripts/ha-yaml-check.py /usr/local/bin/ha-yaml-check
 RUN chmod +x /usr/local/bin/ha-yaml-check
 
-# uv + a uv-managed Python >= 3.14.2 (issue #18), alongside Debian's 3.11. The
+# uv + a uv-managed Python >= 3.14.2 (issue #18), alongside Debian's 3.13. The
 # live HA is 2026.9.1, whose pyproject.toml requires Python >= 3.14.2, and
 # pytest-homeassistant-custom-component 0.13.365 requires >= 3.14 — the
-# system's 3.11.2 can run neither. Pinned GitHub release tarball,
+# system's 3.13 can run neither. Pinned GitHub release tarball,
 # SHA256-verified, same pattern as osv-scanner/trufflehog/hadolint above.
 RUN set -eux; \
     curl -fsSL -o /tmp/uv.tar.gz \
@@ -242,7 +257,10 @@ COPY connector/src ./src
 RUN npm ci --no-audit --no-fund && npm run build && npm prune --omit=dev
 EXPOSE 8765
 
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+# JAVA_HOME is JDK 21 (trixie has no openjdk-17). The Temurin 17 JDK baked above sits
+# beside it only so Gradle toolchain resolution (WallPanel pins languageVersion 17)
+# finds it under /usr/lib/jvm; it is deliberately not JAVA_HOME or on PATH.
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 # ANDROID_SDK_ROOT/GRADLE_USER_HOME live on the persisted home mount (/root)
 # so the downloaded SDK components and Gradle's dependency cache survive
 # container rebuilds. platform-tools is put ahead of apt's adb on PATH so the

@@ -9,7 +9,7 @@ this from inside the running container, you're looking at the agent's own source
 
 ## What's in the image
 
-- **Base:** `node:22-bookworm-slim`
+- **Base:** `node:22-trixie-slim` (Debian 13)
 - **Tooling:** `git`, `tmux`, `docker.io` (client, for controlling sibling containers via the
   mounted socket), `gh` (GitHub CLI), `jq`, `curl`, `python3`,
   `openssh-client`

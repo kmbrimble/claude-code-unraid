@@ -6,6 +6,23 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Base image moved from `node:22-bookworm-slim` to `node:22-trixie-slim` (Debian 13).** Branch
+  `trixie-base`, not yet merged. Node 22 and npm are unchanged. What moves with the base: Python
+  3.11 -> 3.13 (system `python3`; the PAL and semgrep venvs are rebuilt from the same pins, and the
+  uv-managed 3.14.7 is unaffected), PHP 8.2 -> 8.4 (now matches the unRAID host), tmux 3.5a, git
+  2.47, OpenSSH 10, glibc 2.41, yamllint 1.37. Changes needed to make it work: the Docker apt suite
+  is derived from `/etc/os-release` instead of the hardcoded `bookworm`; `python3.11-venv` ->
+  `python3-venv`; **trixie has no `openjdk-17`**, so the apt JDK is now `openjdk-21-jdk-headless`
+  with `JAVA_HOME` on 21, plus a pinned Temurin 17.0.21+9 tarball (SHA256 from Adoptium's published
+  checksum) at `/usr/lib/jvm/temurin-17-jdk-amd64` so Gradle toolchain resolution still finds a
+  JDK 17 for projects that pin one (WallPanel does; without it `compileProdDebugKotlin` fails with
+  "Cannot find a Java installation"). 17 is deliberately not on `PATH` or `JAVA_HOME`.
+  `test/smoke.sh`: Python assertion 3.11 -> 3.13, new checks for java 21, Temurin 17 and php 8.4.
+  **Existing venvs on the persisted mount that were created from the old system Python 3.11
+  (`home = /usr/bin`, `executable = /usr/bin/python3.11`) will break after the container is next
+  recreated and must be recreated** (`uv venv` or `python3 -m venv`); uv-managed venvs are fine.
+  Image change only; nothing was force-updated.
+
 - **PHP CLI baked into the image.** `Dockerfile` gains a small `apt-get install php-cli php-xml`
   layer (Debian bookworm's PHP 8.2 plus SimpleXML) so `php tests/run.php` and `php -l` for the
   Unraid plugin repos (unraid-secretsman first) can run in this container; before this the suite

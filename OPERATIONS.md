@@ -101,9 +101,9 @@ see §6 on why versions drift silently on force-update):
   `entrypoint.sh` |
 | `uv` | `0.12.15`, GitHub release tarball, SHA256-verified on download | `uv --version` |
 | uv-managed Python | `3.14.7` at `/usr/local/bin/python3.14` (managed install under
-  `/opt/uv-python`); system `python3` at `/usr/bin/python3` stays Debian's `3.11.2`, untouched |
+  `/opt/uv-python`); system `python3` at `/usr/bin/python3` stays Debian's `3.13.5`, untouched |
   `python3.14 --version`, `python3 --version` |
-| `yamllint` | `1.29.0` (Debian `bookworm` package, not pinned by this repo — tracks whatever
+| `yamllint` | `1.37.1` (Debian `trixie` package, not pinned by this repo — tracks whatever
   `apt` resolves) | `yamllint --version` |
 | `ha-yaml-check` | `/usr/local/bin/ha-yaml-check`, from `scripts/ha-yaml-check.py` | `ha-yaml-check FILE` |
 | Connector image support | `read_file` returns an MCP image block for PNG/JPEG/GIF/WebP
@@ -406,7 +406,7 @@ jq -r 'select(.event=="tool_call_end") | [.duration_ms, .tool, .outcome, .job_id
 
 - **Why it exists.** The live HA is `2026.9.1`; its `pyproject.toml` requires
   `python_requires >= 3.14.2`, and `pytest-homeassistant-custom-component` 0.13.365 requires
-  `>= 3.14`. The image's system Python (Debian bookworm's `3.11.2` at `/usr/bin/python3`) can
+  `>= 3.14`. The image's system Python (Debian trixie's `3.13.5` at `/usr/bin/python3`) can
   run neither, so ha-config and nectr-energy tests were stubbing every `homeassistant` import
   instead of running against real HA. `uv` + a managed Python 3.14 close that gap without
   touching system Python.
@@ -444,7 +444,7 @@ jq -r 'select(.event=="tool_call_end") | [.duration_ms, .tool, .outcome, .job_id
   real-`hass`-fixture test it runs.
 - **HA YAML linting.** `python3 -c 'import yaml'` and `yamllint` work against the **system**
   Python (Debian's `python3-yaml`/`yamllint` packages — not a pip install into system Python,
-  which bookworm's PEP-668-externally-managed Python refuses by default). `pip3`/`python3 -m
+  which Debian's PEP-668-externally-managed Python refuses by default). `pip3`/`python3 -m
   venv` also work now (`python3-pip`/`python3-venv`), for anything that wants its own venv
   without needing uv. `python3-pil`/ImageMagick were judged not worth the image weight: the
   issue calls them minor with no acceptance criterion.

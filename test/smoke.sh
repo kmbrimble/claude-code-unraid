@@ -148,6 +148,7 @@ check "node present" docker exec "$NAME" node -v
 check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
 check "php present" docker exec "$NAME" php -v
+check "php is the 8.4 line (matches the unRAID host)" bash -c "docker exec '$NAME' php -r 'exit(PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION === \"8.4\" ? 0 : 1);'"
 check "php has SimpleXML" docker exec "$NAME" php -r 'exit(function_exists("simplexml_load_string") ? 0 : 1);'
 # ttyd was removed in 0.29 (issue #19). It could only take its basic-auth
 # credential on the command line, so the password to a writable root shell was
@@ -163,7 +164,7 @@ check "claude tmux session attachable" docker exec "$NAME" tmux has-session -t c
 
 # This container only ever needs a Docker CLIENT (it talks to the unRAID
 # host's daemon over the mounted socket) but Debian bookworm's `docker.io`
-# ships a 20.10 client that predates the `docker compose`/`docker buildx` v2
+# shipped a 20.10 client that predated the `docker compose`/`docker buildx` v2
 # plugin syntax — confirmed to break a Cowork session driving this container.
 # Must be the official Docker CE apt repo's client + plugins instead.
 DOCKER_VERSION_OUTPUT=$(docker exec "$NAME" docker --version 2>&1)
@@ -452,6 +453,12 @@ check "playwright chromium OS deps" docker exec "$NAME" bash -c \
 # launcher outside the /root bind mount for sdkmanager), so they must survive
 # even against the empty persisted-home mount this test uses.
 check "java present" docker exec "$NAME" java -version
+# trixie has no openjdk-17: JAVA_HOME/PATH are JDK 21, and a pinned Temurin 17 sits
+# under /usr/lib/jvm only so Gradle toolchain resolution (WallPanel pins 17) finds it.
+check "java on PATH is 21" bash -c "docker exec '$NAME' java -version 2>&1 | grep -q 'version \"21\.'"
+check "JAVA_HOME is JDK 21" bash -c "docker exec '$NAME' bash -c 'readlink -f \$JAVA_HOME/bin/java | grep -q java-21-openjdk'"
+check "Temurin 17 JDK present for Gradle toolchains and reports 17" bash -c "docker exec '$NAME' /usr/lib/jvm/temurin-17-jdk-amd64/bin/javac -version 2>&1 | grep -q '^javac 17\.'"
+check "Temurin 17 is not on PATH or JAVA_HOME" bash -c "docker exec '$NAME' bash -c 'case \"\$PATH:\$JAVA_HOME\" in *temurin*) exit 1;; esac'"
 check "adb present" docker exec "$NAME" adb --version
 # sdkmanager (this cmdline-tools version) requires --sdk_root explicitly on
 # every invocation, including --version — it does not read ANDROID_SDK_ROOT.
@@ -844,9 +851,9 @@ check "semgrep venv bin is not on PATH" docker exec "$NAME" bash -lc \
 check "python3 is still the system python, not semgrep venv" docker exec "$NAME" bash -lc \
   '[ "$(readlink -f "$(command -v python3)")" != "/opt/semgrep/venv/bin/python3" ]'
 
-# uv + a uv-managed Python >= 3.14.2 (issue #18), alongside Debian's 3.11.
+# uv + a uv-managed Python >= 3.14.2 (issue #18), alongside Debian's 3.13.
 # HA 2026.9.1 requires Python >= 3.14.2 and pytest-homeassistant-custom-component
-# 0.13.365 requires >= 3.14, so the system's 3.11.2 cannot run either. uv installs
+# 0.13.365 requires >= 3.14, so the system's 3.13 cannot run either. uv installs
 # the managed interpreter at UV_PYTHON_INSTALL_DIR=/opt/uv-python (baked, NOT
 # /root, which is shadowed by the persisted home bind mount at runtime — same
 # trap as the Android cmdline-tools and PAL) and links a `python3.14` executable
@@ -861,8 +868,8 @@ check "uv present at pinned version" docker exec "$NAME" bash -c \
   "uv --version | grep -q 'uv $UV_VERSION'"
 check "python3.14 present at pinned version >= 3.14.2 (also proves it survives the empty-/root bind mount this container already runs with)" \
   docker exec "$NAME" bash -c "python3.14 --version | grep -q 'Python $PY314_VERSION'"
-check "system python3 is still Debian's 3.11 at /usr/bin/python3, not shadowed by uv" docker exec "$NAME" bash -c \
-  '[ "$(command -v python3)" = "/usr/bin/python3" ] && python3 --version | grep -qE "Python 3\.11\."'
+check "system python3 is still Debian's 3.13 at /usr/bin/python3, not shadowed by uv" docker exec "$NAME" bash -c \
+  '[ "$(command -v python3)" = "/usr/bin/python3" ] && python3 --version | grep -qE "Python 3\.13\."'
 
 # Slow and network-dependent (installs a real package from PyPI and boots a
 # real, minimal Home Assistant core) — accepted per issue #18, kept as one
@@ -880,7 +887,7 @@ check "uv venv --python 3.14 installs pytest-homeassistant-custom-component and 
   "
 
 # pip / PyYAML for HA YAML linting (issue #18). Debian packages, not a pip
-# install into system Python — bookworm's system Python is PEP 668
+# install into system Python — Debian's system Python is PEP 668
 # externally-managed. python3-pip/python3-venv are added so pip3 exists and
 # works inside venvs; Pillow/ImageMagick were judged not worth the image
 # weight for a "minor" ask with no acceptance criterion, so python3-pil is

@@ -175,7 +175,7 @@ is deliberately not run per-iteration; in practice most changes here are validat
   clamping, deadline fields, `progress_events` transcript tail, idle-timeout kill-vs-spare
   behaviour and SIGTERM-to-SIGKILL escalation — all driven behaviourally against a real MCP
   endpoint in a throwaway container, not asserted against the source. Since 0.28: `uv`/
-  `python3.14` pinned versions and that system `python3` stays Debian's 3.11 unshadowed; a
+  `python3.14` pinned versions and that system `python3` stays Debian's 3.13 unshadowed; a
   real `uv venv --python 3.14` install of `pytest-homeassistant-custom-component` passing a
   test against the actual `hass` fixture (slow, network-dependent, accepted); `ha-yaml-check`
   against fixtures covering every HA tag, a genuine syntax error, and a misspelt/unregistered
