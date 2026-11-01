@@ -150,7 +150,9 @@ can silently change installed tool versions if the image changed.
 - The `~/.claude/settings.json` permission deny list (destructive `docker`/`rm`/`mkfs`/`dd`
   commands) applies to **Claude jobs only** (`start_session` / `continue_session`, which run
   `claude -p`). `run_command` is a direct `bash -lc` spawn that never consults it, so the
-  deny list is **not** a control on `run_command`; the bearer token is.
+  deny list is **not** a control on `run_command`; the auth layer is (the Access login, plus the
+  bearer token in `bearer`/`both` mode). Live deployment: `AUTH_MODE=access` since 2 Nov 2026
+  (template changed then; it applies from the next recreate), so no bearer token is in use.
 - **Hardening (0.36; takes effect only after a force-update, since it is an image change).**
   Children (`run_command`, `claude -p`) no longer inherit `CONNECTOR_TOKEN` or
   `USAGE_COLLECTOR_TOKEN` (nor `NODE_ENV`, which would flip their builds into production mode).

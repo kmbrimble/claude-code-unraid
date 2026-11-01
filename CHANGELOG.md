@@ -23,9 +23,15 @@ is only ever advanced manually. Newest at top.
   recreated and must be recreated** (`uv venv` or `python3 -m venv`); uv-managed venvs are fine.
   Verified against the built image: WallPanel `:WallPanelApp:compileProdDebugKotlin` builds with
   JDK 21 as `JAVA_HOME` and Gradle detecting Temurin 17 under "Common Linux Locations";
-  unraid-secretsman `php tests/run.php` passes 135/135 under PHP 8.4 once `xz` is present (the
-  image has no `xz`, on bookworm either, so its one `.txz` packaging test fails without it).
+  unraid-secretsman `php tests/run.php` passes 135/135 under PHP 8.4. That suite's one `.txz`
+  packaging test needs `xz`, which no previous image had (it failed on bookworm too), so
+  `xz-utils` is added to the PHP layer and smoke-tested.
   Image change only; nothing was force-updated.
+
+- Docs: the bearer connector hostname `claude.kiztigs.com` was retired on 2 Nov 2026; the live
+  connector is OAuth-only (`AUTH_MODE=access`). `templates/claude-code.xml` drops the stale
+  `--add-host=claude.kiztigs.com:...` from `ExtraParams` (it pointed the old hostname at the
+  reverse proxy inside the container; nothing used it). No code change.
 
 - **PHP CLI baked into the image.** `Dockerfile` gains a small `apt-get install php-cli php-xml`
   layer (Debian bookworm's PHP 8.2 plus SimpleXML) so `php tests/run.php` and `php -l` for the

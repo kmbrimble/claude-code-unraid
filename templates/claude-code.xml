@@ -16,7 +16,7 @@
   <WebUI/>
   <TemplateURL/>
   <Icon>https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg</Icon>
-  <ExtraParams>--restart=unless-stopped --add-host=claude.kiztigs.com:192.168.0.23</ExtraParams>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled>1786395332</DateInstalled>
