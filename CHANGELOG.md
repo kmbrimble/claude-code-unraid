@@ -6,8 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
-- **Base image moved from `node:22-bookworm-slim` to `node:22-trixie-slim` (Debian 13).** Branch
-  `trixie-base`, not yet merged. Node 22 and npm are unchanged. What moves with the base: Python
+- **Base image moved from `node:22-bookworm-slim` to `node:22-trixie-slim` (Debian 13).** Node 22 and npm are
+  unchanged. What moves with the base: Python
   3.11 -> 3.13 (system `python3`; the PAL and semgrep venvs are rebuilt from the same pins, and the
   uv-managed 3.14.7 is unaffected), PHP 8.2 -> 8.4 (now matches the unRAID host), tmux 3.5a, git
   2.47, OpenSSH 10, glibc 2.41, yamllint 1.37. Changes needed to make it work: the Docker apt suite
