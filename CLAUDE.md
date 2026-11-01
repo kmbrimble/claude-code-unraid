@@ -128,9 +128,10 @@ Read by `code-diff-reviewer`, `code-audit` and `code-security-audit` to calibrat
 escalation scoring. These four answers are what stop them guessing.
 
 **Exposure: internet-facing behind authentication — and the blast radius is the whole box.**
-The MCP connector (`connector/`, port 8765) is published at `https://claude.kiztigs.com/mcp`
-and reached from Claude Cowork over the internet; a bearer token is the entire security
-boundary (constraint 7). Score exposure 2. Score authority at the top of its range for
+The MCP connector (`connector/`, port 8765) is published at `https://claude-oauth.kiztigs.com/mcp`
+and reached from Claude Cowork over the internet; its auth layer is the entire security
+boundary (constraint 7). The live deployment runs `AUTH_MODE=access` (Cloudflare Access
+Managed OAuth) since 2 Nov 2026; the bearer hostname `claude.kiztigs.com` was retired then. Score exposure 2. Score authority at the top of its range for
 anything touching the connector, `CONNECTOR_TOKEN`, or `entrypoint.sh` — `run_command` is
 arbitrary shell in a container holding the Docker socket, so a hole here is root on unRAID,
 not a bug in an app.
@@ -153,8 +154,9 @@ false positives, and its absence has already cost one:
   time, through a live patch to the host's dockerMan `Helpers.php`. Nothing in this repo
   resolves that syntax. On 3 Sep 2026 a reviewer correctly observed exactly that and filed it
   as a defect, and `advisor` confirmed it HIGH. It was wrong — the mechanism is on the host.
-- **Whatever publishes `https://claude.kiztigs.com/mcp`.** The ingress is not here; the
-  hostname appears nowhere in this tree.
+- **Whatever publishes `https://claude-oauth.kiztigs.com/mcp`.** The tunnel ingress, the
+  Cloudflare Access app and its WAF rule are not here; the hostname appears in this tree only
+  in these notes.
 - **The unRAID CA template**, applied by the host. The committed `templates/claude-code.xml`
   is a copy and is known to have drifted from the live one.
 - **The persisted appdata mounts**, created and owned by the host.

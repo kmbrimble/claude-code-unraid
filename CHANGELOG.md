@@ -6,6 +6,11 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- Docs: the bearer connector hostname `claude.kiztigs.com` was retired on 2 Nov 2026; the live
+  connector is OAuth-only (`AUTH_MODE=access`). `templates/claude-code.xml` drops the stale
+  `--add-host=claude.kiztigs.com:...` from `ExtraParams` (it pointed the old hostname at the
+  reverse proxy inside the container; nothing used it). No code change.
+
 - **PHP CLI baked into the image.** `Dockerfile` gains a small `apt-get install php-cli php-xml`
   layer (Debian bookworm's PHP 8.2 plus SimpleXML) so `php tests/run.php` and `php -l` for the
   Unraid plugin repos (unraid-secretsman first) can run in this container; before this the suite
