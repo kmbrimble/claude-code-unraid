@@ -21,6 +21,10 @@ is only ever advanced manually. Newest at top.
   **Existing venvs on the persisted mount that were created from the old system Python 3.11
   (`home = /usr/bin`, `executable = /usr/bin/python3.11`) will break after the container is next
   recreated and must be recreated** (`uv venv` or `python3 -m venv`); uv-managed venvs are fine.
+  Verified against the built image: WallPanel `:WallPanelApp:compileProdDebugKotlin` builds with
+  JDK 21 as `JAVA_HOME` and Gradle detecting Temurin 17 under "Common Linux Locations";
+  unraid-secretsman `php tests/run.php` passes 135/135 under PHP 8.4 once `xz` is present (the
+  image has no `xz`, on bookworm either, so its one `.txz` packaging test fails without it).
   Image change only; nothing was force-updated.
 
 - **PHP CLI baked into the image.** `Dockerfile` gains a small `apt-get install php-cli php-xml`

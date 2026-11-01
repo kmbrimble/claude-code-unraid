@@ -79,7 +79,7 @@ see §6 on why versions drift silently on force-update):
 
 | Item | Verified value | Verified how |
 |---|---|---|
-| Docker CLI | `29.7.2`, build `a7dcaa6` (Docker CE, not `docker.io`) | `docker --version` |
+| Docker CLI | `29.9.2`, build `a82e528` (Docker CE, not `docker.io`) | `docker --version` |
 | `ps`, `free`, `top` | present at `/usr/bin/{ps,free,top}` (procps) | `which ps free top` |
 | Claude Code CLI | tracks npm `latest` — never pinned; updated at container start and hourly by `scripts/claude-update.sh` (§6a). 2.1.281 on 2026-09-24 | `claude --version`; `~/claude-update.log`; `claude doctor` |
 | PAL MCP server | `9.8.2` (SHA `fa78edca0b6bc04ab00ddf5694d855f1b946b87d`), 6 live tools
