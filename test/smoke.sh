@@ -147,6 +147,8 @@ check "gh present" docker exec "$NAME" gh --version
 check "node present" docker exec "$NAME" node -v
 check "git present" docker exec "$NAME" git --version
 check "tmux present" docker exec "$NAME" tmux -V
+check "php present" docker exec "$NAME" php -v
+check "php has SimpleXML" docker exec "$NAME" php -r 'exit(function_exists("simplexml_load_string") ? 0 : 1);'
 # ttyd was removed in 0.29 (issue #19). It could only take its basic-auth
 # credential on the command line, so the password to a writable root shell was
 # readable in `ps`, in `docker inspect`, in the dockerMan template on the flash

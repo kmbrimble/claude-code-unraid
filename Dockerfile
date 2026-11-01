@@ -172,6 +172,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-yaml yamllint python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
+# PHP CLI, so Unraid plugin work in this container (unraid-secretsman's
+# `php tests/run.php`, `php -l`) can run its test suite here instead of only on
+# the unRAID host or in CI. Debian packages: `php-cli` is bookworm's 8.2 line and
+# `php-xml` provides SimpleXML, the one extension that repo's CI enables. 8.2 sits
+# between the 8.1 and 8.4 that repo's CI matrix covers; the host runs 8.4, so CI
+# and the host remain the source of truth and this is for fast local iteration.
+# No composer, no web server, no extra extensions: add those when something needs
+# them. Kept as its own small layer so it never invalidates a heavy one above.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      php-cli php-xml \
+    && rm -rf /var/lib/apt/lists/*
+
 # ha-yaml-check: a PyYAML SafeLoader that tolerates Home Assistant's custom
 # YAML tags (!secret, !include, !include_dir_list, !include_dir_named,
 # !include_dir_merge_list, !include_dir_merge_named, !env_var, !input) as

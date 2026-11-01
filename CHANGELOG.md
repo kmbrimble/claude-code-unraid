@@ -6,6 +6,15 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **PHP CLI baked into the image.** `Dockerfile` gains a small `apt-get install php-cli php-xml`
+  layer (Debian bookworm's PHP 8.2 plus SimpleXML) so `php tests/run.php` and `php -l` for the
+  Unraid plugin repos (unraid-secretsman first) can run in this container; before this the suite
+  could only run on the unRAID host or in CI, and an agent session had to report "tests not run".
+  The host runs 8.4 and that repo's CI covers 8.1 and 8.4, so CI stays authoritative. `test/smoke.sh`
+  gains `php present` and `php has SimpleXML` checks. **Image change only, so it takes effect
+  when the container next pulls and recreates the image, not from this commit**; nothing was
+  force-updated.
+
 - **PAL counsel model: GPT-5.6 Terra -> GPT-6.1 Terra** (OpenRouter `openai/gpt-6.1-terra`, listed 27 Oct 2026;
   list price US$1/$5 per M tokens in/out against US$2/$12; same 1.05M context, 128K output and
   parameter set; the same step-up above 272K prompt tokens). Template and docs only, no change to
