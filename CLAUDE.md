@@ -12,7 +12,11 @@ app, it breaks the agent. Be correspondingly conservative.
 ## Layout
 
 - Repo (in container): `/projects/claude-code-unraid`
-- GitHub: `kmbrimble/claude-code-unraid`
+- Forge: **Gitea is primary** (`https://git.kiztigs.com/kmbrimble/claude-code-unraid`, `origin`, gt credential helper; use `gt`, not `gh`, for issues and PRs); `github.com/kmbrimble/claude-code-unraid`
+  is a read-only push mirror (Gitea syncs on every push and every 10 minutes) whose only job is building the image: **never push to it** (the mirror force-syncs and prunes refs).
+  `main` is protected: PR + the green `CI / check (pull_request)` (`.gitea/workflows/ci.yml`: Dockerfile lint at error level, shellcheck, script parse checks, connector `tsc`); butler-bot merges its own green PRs.
+  **A merge to `main` makes the mirror push to GitHub, whose `build.yml` then builds and publishes `:latest`** (as every push to main always did). That publishes only; the running container changes
+  when Kieren force-updates it. GitHub has Issues, Wiki, Projects, Discussions and PRs switched off.
 - Published image: `ghcr.io/kmbrimble/claude-code-unraid:latest`
 - Live container: `claude-code` (this one)
 

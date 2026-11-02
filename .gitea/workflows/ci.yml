@@ -1,0 +1,50 @@
+name: CI
+
+# Gitea is the primary forge; GitHub is a read-only push mirror whose only job is building and publishing the container image
+# to GHCR (.github/workflows/build.yml, on every push to main). This job is the required status check on main
+# ("CI / check (pull_request)"). The full image build + smoke test (test/smoke.sh) is too heavy for a PR gate and already happens on
+# GitHub after the merge, so the gate is: Dockerfile lint (errors), shellcheck (errors) on every shell script, every Python and
+# .mjs test script parses, and the MCP connector's TypeScript compiles.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  HADOLINT_VERSION: 'v2.15.1'
+  HADOLINT_SHA256: 'c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Hadolint (Dockerfile, errors only; the existing style warnings are not gated)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/hadolint" "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          echo "${HADOLINT_SHA256}  $RUNNER_TEMP/hadolint" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/hadolint"
+          "$RUNNER_TEMP/hadolint" --failure-threshold error Dockerfile
+
+      - name: ShellCheck (errors) on every tracked shell script
+        run: |
+          set -euo pipefail
+          pip3 install -q --break-system-packages shellcheck-py
+          # SC2148: scripts/claude-wrapper.sh is a snippet appended to an rc file, deliberately without a shebang.
+          shellcheck -S error -e SC2148 $(git ls-files '*.sh')
+
+      - name: Python and Node test scripts parse
+        run: |
+          set -euo pipefail
+          for f in $(git ls-files '*.py'); do python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])" "$f"; done
+          for f in $(git ls-files '*.mjs'); do node --check "$f"; done
+
+      - name: MCP connector compiles (tsc)
+        run: |
+          set -euo pipefail
+          cd connector
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit -p .

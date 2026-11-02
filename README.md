@@ -1,5 +1,7 @@
 # claude-code-unraid
 
+> Development happens on a private forge; this repository is a read-only mirror. Releases are published here.
+
 A Docker image that runs an autonomous [Claude Code](https://claude.com/claude-code) agent as a
 long-lived unRAID container, with a persisted home directory, GitHub CLI auth wired up
 non-interactively, and a `tmux` session you can attach to at any time.
