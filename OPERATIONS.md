@@ -600,6 +600,40 @@ pulled/cached image and does **not** pull a new one — only a genuine force-upd
 (`update_container`) pulls. Don't confuse the two when trying to explain "why didn't my new
 image take effect."
 
+## 6b. Rollback recipe (recorded before the Gitea stage 2 image, 2 Nov 2026)
+
+Recorded from the running container immediately before the image that adds `gt`, `gitea-mcp` and
+the `gh` shim:
+
+| | |
+|---|---|
+| Registry digest | `ghcr.io/kmbrimble/claude-code-unraid@sha256:8f66daacb3f0632a0ff511ae8b3e34c614a89057afcf4ceddb31aca0ea7a7324` |
+| Image ID | `sha256:7ba9c8e5cf7001ba6490ac9b4ccf7d4a73685630d9d14c5ff680f1fbef755513` |
+| Image created | 2026-11-01T22:02:37Z (the trixie-base image) |
+| Local retention tag | `claude-code-rollback:20261102-8f66daac`, added on the host's image store so a dockerMan prune cannot drop the only local copy once the force-update untags it |
+
+Rollback, **from the host** (same rules as §6: never from inside the container being replaced):
+
+1. Edit `/boot/config/plugins/dockerMan/templates-user/my-claude-code.xml` (back it up first) and
+   change `<Repository>` from `ghcr.io/kmbrimble/claude-code-unraid:latest` to the digest above.
+2. Apply the template in dockerMan (a *recreate*, which uses the image already present locally and
+   does not pull, §6), or run `/projects/.ops/force-update-with-watchdog.sh` if the new image
+   will not start at all.
+3. `docker ps -a`, `docker exec claude-code gt --version` should now fail (old image) and the old
+   entrypoint banner should appear in `docker logs claude-code`.
+
+What is and is not verified: `docker create ghcr.io/...@sha256:8f66...` works against the local image
+(tested with a `smoketest-` container). **Not verified: how dockerMan's update checker treats a
+digest in `<Repository>`** — it parses `repo:tag` and probably shows "not available" for the
+update status. The create path is plain `docker create`, so expect it to run. If dockerMan
+mangles it, `docker tag` the retained local tag to `ghcr.io/kmbrimble/claude-code-unraid:latest`
+on the host and recreate (still no pull). `:latest` on GHCR will keep moving, so the digest, not
+the tag, is the rollback target. GHCR retains untagged manifests until they are deleted, but it
+is not guaranteed forever: the local tag is the real safety net.
+
+The home-mount changes of stage 2 (skills, hook, `forge-map.json`) are independent of the image
+and need no rollback with it; the hook and `gh` shim fail open when their files are missing.
+
 ## 6a. Keeping Claude Code current
 
 Kieren's standing requirement: the container always runs the newest Claude Code release — no
