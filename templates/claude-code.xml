@@ -16,8 +16,8 @@
   <WebUI/>
   <TemplateURL/>
   <Icon>https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg</Icon>
-  <ExtraParams>--restart=unless-stopped --add-host=git.kiztigs.com:192.168.0.23</ExtraParams>
-  <PostArgs/>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs>&amp;&amp; docker network connect --ip 172.18.0.200 proxynet claude-code</PostArgs>
   <CPUset/>
   <DateInstalled>1786395332</DateInstalled>
   <DonateText/>

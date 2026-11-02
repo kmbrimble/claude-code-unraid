@@ -506,27 +506,22 @@ Entrypoint, only when `GITEA_TOKEN` and a host are set (both blocks are never fa
 - Commit identity is unchanged (`Butler Bot`, `butler-bot@users.noreply.github.com`): Gitea does not
   need it, though commits will not link to the `butler-bot` account by email.
 
-**Network blocker (found, not fixed): this container cannot reach `https://git.kiztigs.com`.** Two
-independent causes, both outside this repo:
+**Network path to Gitea (resolved 2 Nov 2026, replaces the earlier "blocker").** The container sits on the
+default `bridge`, which cannot reach br0 (ipvlan) containers such as NPM. Instead of host access to custom
+networks (restarts Docker), it is attached to `proxynet` through the NetMan plugin:
 
-1. *DNS.* The container uses Docker's bridge resolvers (`1.1.1.1`, `8.8.4.4`). The name exists only
-   as an AdGuard rewrite to NPM (`192.168.0.23`), so it is NXDOMAIN here.
-2. *Route.* NPM and AdGuard are br0 (ipvlan) containers. From this bridge-network container,
-   `192.168.0.23:443` and `192.168.0.24:53` answer "No route to host", while the unRAID host's own
-   address (`192.168.0.10:2222`, Gitea's SSH) and real LAN peers (`192.168.0.28`) are reachable.
-   `/boot/config/docker.cfg` has no `DOCKER_ALLOW_ACCESS`, i.e. Settings > Docker > "Host access to
-   custom networks" is off, which is the usual cause and matches stage 1's "neither this container nor
-   the host can reach .23". *Not verified by toggling it.*
-
-Suggested fix, Kieren's call because it restarts the Docker service (every container): turn on "Host
-access to custom networks", and add `--add-host=git.kiztigs.com:192.168.0.23` to the claude-code
-template's `ExtraParams` (more surgical than `--dns`). Untested: the source address NPM then sees
-must still fall inside its `192.168.0.0/22` allow list. Until then everything above is configured
-but inert: the helper and MCP server start and fail on connect, and `git over ssh://git@192.168.0.10:2222`
-is the only reachable Gitea path from here. For ad-hoc work from this container only, a
-non-persistent bridge through the runner VM works:
-`echo '127.0.0.1 git.kiztigs.com' >> /etc/hosts; ssh -f -N -L 127.0.0.1:443:192.168.0.23:443 gitea-runner`
-(undo: remove the hosts line, kill that `ssh`). Do not bake this into the image.
+- claude-code template `PostArgs`: `&& docker network connect --ip 172.18.0.200 proxynet claude-code`
+  (NetMan "post" path because the primary is `bridge`; fixed IP so the NPM allow-list entry is stable;
+  .200 is far above Docker's sequential pool, which hands out .2, .3, ...). State: NetMan `state.json`.
+- Name resolution: NPM has the proxynet **alias `git.kiztigs.com`** (its template `ExtraParams`:
+  `--network name=proxynet,alias=git.kiztigs.com`). Once the container is on a user-defined network Docker
+  switches its `resolv.conf` to the embedded DNS (127.0.0.11), which answers the alias with NPM's proxynet
+  address and forwards everything else. No `--add-host`, no hard-coded NPM IP (the old `--add-host` to
+  192.168.0.23 was unreachable and is gone).
+- NPM access list 3 `gitea-lan-only`: `allow 192.168.0.0/22` + `allow 172.18.0.200/32`.
+- Caveat: on a **recreate** the container starts on `bridge` first and joins proxynet a moment later (PostArgs
+  runs after `docker run`), so a very early entrypoint step cannot reach Gitea. Nothing in the entrypoint
+  needs it (`gt auth setup-git` is offline).
 
 Home-mount side (not in this repo, takes effect without a rebuild; backups in
 `~/.claude/.backups/stage2-20261102/`): `skills/gt` (vendored with `npx skills add
