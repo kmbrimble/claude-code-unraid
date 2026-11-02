@@ -240,6 +240,24 @@ ENV UV_PYTHON_BIN_DIR=/usr/local/bin
 ENV UV_PYTHON_DOWNLOADS=manual
 RUN uv python install 3.14.7
 
+# Gitea CLI (`gt`, gitea.com/gitea/cli) and the official Gitea MCP server (gitea.com/gitea/gitea-mcp),
+# for the GitHub -> Gitea migration. Pinned releases with the SHA256 taken from each release's own
+# published checksums file, same pattern as uv and the scanners above (deliberately not "latest at
+# build time": an unpinned fetch is not reproducible and would bust this layer's cache on every
+# build). `gt` is installed at /usr/local/bin/gt and must stay there: `gt auth setup-git` writes
+# that absolute path into the persisted ~/.gitconfig. gt needs Gitea 28+.
+RUN set -eux; \
+    curl -fsSL -o /tmp/gt https://gitea.com/gitea/cli/releases/download/v0.2.0/gitea-cli-0.2.0-linux-amd64; \
+    echo "220f329cbc08f55f623aa0814000eabab2fe76271c57ffb12fdb6311ab358e36  /tmp/gt" | sha256sum -c -; \
+    install -m 0755 /tmp/gt /usr/local/bin/gt; \
+    curl -fsSL -o /tmp/gitea-mcp.tar.gz https://gitea.com/gitea/gitea-mcp/releases/download/v1.12.0/gitea-mcp_Linux_x86_64.tar.gz; \
+    echo "4e2b817efdbf0d0275b848e23a96636348559b5666409ce5ae93dc4dfea8e3d9  /tmp/gitea-mcp.tar.gz" | sha256sum -c -; \
+    mkdir /tmp/gitea-mcp-x; \
+    tar -xzf /tmp/gitea-mcp.tar.gz -C /tmp/gitea-mcp-x gitea-mcp; \
+    install -m 0755 /tmp/gitea-mcp-x/gitea-mcp /usr/local/bin/gitea-mcp; \
+    rm -rf /tmp/gt /tmp/gitea-mcp.tar.gz /tmp/gitea-mcp-x; \
+    gt --version; gitea-mcp --version
+
 # Unpinned baseline only. The registry layer cache means this layer is usually
 # reused, so it is NOT what keeps Claude Code current — entrypoint.sh does that at
 # every start and hourly (scripts/claude-update.sh). Kept below the larger
@@ -291,6 +309,12 @@ COPY scripts/remote-log-cap.sh /usr/local/lib/remote-log-cap.sh
 COPY scripts/claude-update.sh /usr/local/lib/claude-update.sh
 COPY scripts/android-sdk-bootstrap.sh /usr/local/lib/android-sdk-bootstrap.sh
 RUN chmod +x /usr/local/lib/android-sdk-bootstrap.sh
+
+# gitea-mcp launcher (maps GITEA_TOKEN -> GITEA_ACCESS_TOKEN at launch) and the gh shim. The shim
+# shadows apt's /usr/bin/gh via PATH order and execs it after the home-mount forge guard runs.
+COPY scripts/gitea-mcp-launch.sh /usr/local/lib/gitea-mcp-launch.sh
+COPY scripts/gh-shim.sh /usr/local/bin/gh
+RUN chmod +x /usr/local/lib/gitea-mcp-launch.sh /usr/local/bin/gh
 
 WORKDIR /projects
 

@@ -6,6 +6,19 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Gitea tooling alongside `gh` (stage 2 of the GitHub to Gitea migration).** Adds the official Gitea CLI
+  `gt` 0.2.0 and `gitea-mcp` 1.12.0 (pinned, SHA256-verified; not "latest at build time", see OPERATIONS.md
+  §4c). `entrypoint.sh`: when `GITEA_TOKEN` and `GITEA_CLI_HOST`/`GITEA_HOST` are set, `gt auth setup-git`
+  wires git credentials for that host (token read from the environment at git time, github.com's `gh` helper
+  untouched), and `gitea-mcp` is registered once as a user-scope stdio MCP server through
+  `scripts/gitea-mcp-launch.sh` with no `-e` flags, so no token reaches `.claude.json` (gitea-mcp wants
+  `GITEA_ACCESS_TOKEN`, the template carries `GITEA_TOKEN`; the launcher maps it). Both blocks are non-fatal.
+  New `/usr/local/bin/gh` shim runs the home-mount forge guard, then execs apt's unmoved `/usr/bin/gh`; it
+  fails open and never inspects `gh auth ...`. Template: `GITEA_TOKEN` (`!secret`), `GITEA_CLI_HOST`,
+  `GITEA_HOST`. Smoke: pinned versions, shim behaviour against a stub guard, credential/registration with and
+  without a token, an MCP handshake, and idempotence across a restart. **Known blocker, not an image fault:**
+  the container cannot reach `git.kiztigs.com` (public DNS and no route to br0 container IPs); see OPERATIONS.md
+  §4c. Rollback digest recorded in §6b. Image change only; nothing was force-updated.
 - **Base image moved from `node:22-bookworm-slim` to `node:22-trixie-slim` (Debian 13).** Node 22 and npm are
   unchanged. What moves with the base: Python
   3.11 -> 3.13 (system `python3`; the PAL and semgrep venvs are rebuilt from the same pins, and the

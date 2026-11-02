@@ -92,6 +92,9 @@ see §6 on why versions drift silently on force-update):
   venv never shadows `python3`/`pip`. The osv-scanner offline DB is on the persisted mount, not
   in the image | `test/smoke.sh` asserts each pinned version, and asserts the venv stays off
   `PATH` |
+| `gt` | `0.2.0` at `/usr/local/bin/gt`, pinned release binary, SHA256-verified | `gt --version`; `test/smoke.sh` |
+| `gitea-mcp` | `1.12.0` at `/usr/local/bin/gitea-mcp`, pinned release tarball, SHA256-verified; 48 tools over stdio | `gitea-mcp --version`; `test/gitea_mcp_handshake.py` |
+| `gh` shim | `/usr/local/bin/gh` (from `scripts/gh-shim.sh`) in front of apt's `/usr/bin/gh` | `command -v gh`; `test/smoke.sh` |
 | `claude-wrapper.sh` / `_claude_auto_retry` | sourced correctly; a non-zero exit from the
   wrapper's retry function propagates to the caller's `$?` | forced a `return 7` and confirmed
   `claude foo; echo $?` printed `7` |
@@ -472,6 +475,82 @@ jq -r 'select(.event=="tool_call_end") | [.duration_ms, .tool, .outcome, .job_id
 - **Not attempted here — see §8.** Whether `hass --script check_config -c <copy of /config>`
   catches the class of `template:` platform-schema errors that the REST `check_config` misses
   is still open; the custom components' own requirements may make it impractical.
+
+## 4c. Gitea tooling (stage 2 of the GitHub to Gitea migration, 2 Nov 2026)
+
+Image side (this repo): `gt` 0.2.0 (`/usr/local/bin/gt`, gitea.com/gitea/cli, needs Gitea 28+),
+`gitea-mcp` 1.12.0 (`/usr/local/bin/gitea-mcp`), `scripts/gitea-mcp-launch.sh`, and the `gh` shim
+`scripts/gh-shim.sh` at `/usr/local/bin/gh`. Both binaries are pinned with the SHA256 from the
+release's own checksums file (not "latest at build time": unreproducible, and it would bust the layer
+cache every build). `gh` itself is still apt's, untouched at `/usr/bin/gh`; the shim wins by PATH
+order and `exec`s it, so `apt upgrade` keeps working and git's `gh auth git-credential` helper
+(which `gh auth setup-git` points at `/usr/bin/gh`) is unaffected.
+
+Template variables (repo copy and live `my-claude-code.xml`): `GITEA_TOKEN` (`!secret
+claude-code/gitea_token`, butler-bot, high-trust: it can create *and delete* org repos),
+`GITEA_CLI_HOST` and `GITEA_HOST` (both `https://git.kiztigs.com`). The triage token is not wired
+(stage 4). Variable names are not interchangeable: gt reads `GITEA_TOKEN` + `GITEA_CLI_HOST`;
+gitea-mcp reads `GITEA_ACCESS_TOKEN` + `GITEA_HOST`, so the launcher maps the token at launch.
+
+Entrypoint, only when `GITEA_TOKEN` and a host are set (both blocks are never fatal):
+
+- `gt auth setup-git --host <host>` writes a per-host `[credential "<host>"]` section in
+  `~/.gitconfig` whose helper is `gt auth git-credential`, which reads `GITEA_TOKEN` from the
+  environment at git time (no keyring, no file). It needs no network, is idempotent (re-run twice,
+  one section), and leaves the github.com `gh` section and the global helper list alone. The
+  helper itself *does* need the network (it asks Gitea who the token is to supply a username).
+- `claude mcp add --scope user gitea -- /usr/local/lib/gitea-mcp-launch.sh`, no `-e` flags (they
+  would freeze the token into `.claude.json`: the PAL trap above). Registered once; the launcher
+  reads the environment on every launch. gitea-mcp exposes 48 tools including `delete_file` and
+  `create_organization`; narrow it with its `-S`/`-O` flags in the launcher if that is too much.
+- Commit identity is unchanged (`Butler Bot`, `butler-bot@users.noreply.github.com`): Gitea does not
+  need it, though commits will not link to the `butler-bot` account by email.
+
+**Network blocker (found, not fixed): this container cannot reach `https://git.kiztigs.com`.** Two
+independent causes, both outside this repo:
+
+1. *DNS.* The container uses Docker's bridge resolvers (`1.1.1.1`, `8.8.4.4`). The name exists only
+   as an AdGuard rewrite to NPM (`192.168.0.23`), so it is NXDOMAIN here.
+2. *Route.* NPM and AdGuard are br0 (ipvlan) containers. From this bridge-network container,
+   `192.168.0.23:443` and `192.168.0.24:53` answer "No route to host", while the unRAID host's own
+   address (`192.168.0.10:2222`, Gitea's SSH) and real LAN peers (`192.168.0.28`) are reachable.
+   `/boot/config/docker.cfg` has no `DOCKER_ALLOW_ACCESS`, i.e. Settings > Docker > "Host access to
+   custom networks" is off, which is the usual cause and matches stage 1's "neither this container nor
+   the host can reach .23". *Not verified by toggling it.*
+
+Suggested fix, Kieren's call because it restarts the Docker service (every container): turn on "Host
+access to custom networks", and add `--add-host=git.kiztigs.com:192.168.0.23` to the claude-code
+template's `ExtraParams` (more surgical than `--dns`). Untested: the source address NPM then sees
+must still fall inside its `192.168.0.0/22` allow list. Until then everything above is configured
+but inert: the helper and MCP server start and fail on connect, and `git over ssh://git@192.168.0.10:2222`
+is the only reachable Gitea path from here. For ad-hoc work from this container only, a
+non-persistent bridge through the runner VM works:
+`echo '127.0.0.1 git.kiztigs.com' >> /etc/hosts; ssh -f -N -L 127.0.0.1:443:192.168.0.23:443 gitea-runner`
+(undo: remove the hosts line, kill that `ssh`). Do not bake this into the image.
+
+Home-mount side (not in this repo, takes effect without a rebuild; backups in
+`~/.claude/.backups/stage2-20261102/`): `skills/gt` (vendored with `npx skills add
+https://gitea.com/gitea/cli.git --skill gt -g -a claude-code --copy`; refresh with `npx skills update
+gt` after upgrading gt), `skills/forge`, `forge-map.json` (made by `bin/forge-map-gen`), `bin/forge-of`,
+`hooks/forge-guard.{sh,py,test.sh}` registered as a second PreToolUse entry beside
+docker-cleanup-guard (settings.json; matcher `Bash|Edit|Write|MultiEdit`), `forge-guard.json`
+(`{"mode":"warn"}`; set `"deny"` to flip), and a "Forge language rule" in the global `CLAUDE.md`.
+
+**forge-guard is guidance, not a security boundary.** It segments shell text heuristically. It is
+bypassed by an absolute `/usr/bin/gh`, `bash -c "$(...)"`, scripts that call the API themselves, or a
+Python `open()` of a workflow file. The `gh` shim covers callers that never reach a Claude hook (the
+connector's `run_command`, scripts) but cannot see the permission mode, so it only warns, and blocks
+only wrong-forge repos in deny mode. Both fail open if the guard or `forge-map.json` is missing or
+crashes; `FORGE_GUARD=off` disables both. Rules: see the docstring of `forge-guard.py`. Verbs it treats
+as destructive (denied in bypassPermissions, ask otherwise): repo delete/transfer, release delete,
+mirror/token API writes, token creation, writes to CI workflow files (this deliberately also covers the
+Edit/Write tools, which the brief did not list; a headless `/feature` run therefore cannot edit a
+workflow file without Kieren). Edits to the guard take effect immediately, in the running session
+too (settings are re-read), so test with piped JSON (`hooks/forge-guard.test.sh`) before relying on one.
+
+Not done, by design, until each repo's cut-over: rewrites of `issue-to-ship`, `issue-sprint`,
+`new-project` and `/feature` (they only carry a "forge first" pointer); the `forge-release` skill
+(publishing to GitHub from mirrored repos); flipping the guard to deny; the triage token.
 
 ## 5. The `/feature` workflow
 

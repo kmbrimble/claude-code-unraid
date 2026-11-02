@@ -159,6 +159,14 @@ false positives, and its absence has already cost one:
   in these notes.
 - **The unRAID CA template**, applied by the host. The committed `templates/claude-code.xml`
   is a copy and is known to have drifted from the live one.
+- **Gitea (`https://git.kiztigs.com`)** and the path to it: AdGuard's rewrite, NPM's LAN-only
+  access list, and unRAID's "Host access to custom networks" setting (off, so this container cannot
+  reach it yet; OPERATIONS.md §4c). The Gitea tooling in the image (`gt`, `gitea-mcp`, the `gh` shim)
+  is inert until that is fixed. A finding of the form "nothing here makes git.kiztigs.com resolvable"
+  is `UNVERIFIABLE FROM THIS REPO`.
+- **The forge guard and forge map** (`~/.claude/hooks/forge-guard.*`, `forge-map.json`), which live on
+  the persisted home mount, not in this repo. The `gh` shim calls them and must fail open when they
+  are absent; that is deliberate, not a missing check.
 - **The persisted appdata mounts**, created and owned by the host.
 - **`/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/update_container`** — the
   force-update path, on the host.

@@ -968,6 +968,73 @@ check "entrypoint starts the connector with NODE_ENV=production" docker exec "$N
 check "connector log file is mode 0600" docker exec "$NAME" bash -c \
   '[ "$(stat -c %a /root/claude-code-connector.log)" = 600 ]'
 
+# Gitea tooling (stage 2 of the GitHub -> Gitea migration): gt, gitea-mcp and the gh shim.
+# Pinned versions asserted exactly, like the scanners: a silently drifted CLI is worse than an absent one.
+check "gt at /usr/local/bin/gt (the path 'gt auth setup-git' bakes into .gitconfig), pinned 0.2.0" \
+  docker exec "$NAME" bash -c '[ "$(command -v gt)" = /usr/local/bin/gt ] && gt --version | grep -q "gt version 0\.2\.0"'
+check "gitea-mcp present at pinned version 1.12.0" \
+  docker exec "$NAME" bash -c 'gitea-mcp --version | grep -qx "1\.12\.0"'
+check "gh resolves to the shim and --version passes through to apt's gh" \
+  docker exec "$NAME" bash -c '[ "$(command -v gh)" = /usr/local/bin/gh ] && [ -x /usr/bin/gh ] && gh --version | grep -q "^gh version"'
+
+# Shim behaviour, driven against a stub guard on the home mount: only exit 3 blocks; a missing guard, a
+# crashing guard, FORGE_GUARD=off and `gh auth ...` all run the real gh unchanged.
+GUARD_STUB="$(mktemp)"
+printf '#!/bin/sh\necho "$@" >> /tmp/guard.log\nexit "${STUB_RC:-0}"\n' > "$GUARD_STUB"
+docker exec "$NAME" mkdir -p /root/.claude/hooks >/dev/null 2>&1
+docker cp "$GUARD_STUB" "$NAME:/root/.claude/hooks/forge-guard.sh" >/dev/null 2>&1
+rm -f "$GUARD_STUB"
+docker exec "$NAME" bash -c 'chmod +x /root/.claude/hooks/forge-guard.sh; : > /tmp/guard.log' >/dev/null 2>&1
+check "gh shim: guard exit 3 blocks gh (real gh not run)" docker exec "$NAME" bash -c \
+  'out=$(STUB_RC=3 gh --version 2>&1); rc=$?; [ "$rc" -ne 0 ] && ! grep -q "gh version" <<<"$out"'
+check "gh shim: guard exit 0 runs gh and the guard saw the arguments" docker exec "$NAME" bash -c \
+  ': > /tmp/guard.log; STUB_RC=0 gh --version | grep -q "^gh version" && grep -qx -- "--shim -- --version" /tmp/guard.log'
+check "gh shim: a crashing guard (exit 1) fails open" docker exec "$NAME" bash -c \
+  'STUB_RC=1 gh --version | grep -q "^gh version"'
+check "gh shim: FORGE_GUARD=off skips the guard" docker exec "$NAME" bash -c \
+  ': > /tmp/guard.log; STUB_RC=3 FORGE_GUARD=off gh --version | grep -q "^gh version" && [ ! -s /tmp/guard.log ]'
+check "gh shim: 'gh auth ...' never consults the guard (git credential helper path)" docker exec "$NAME" bash -c \
+  ': > /tmp/guard.log; STUB_RC=3 gh auth status >/dev/null 2>&1; [ ! -s /tmp/guard.log ]'
+docker exec "$NAME" rm -f /root/.claude/hooks/forge-guard.sh >/dev/null 2>&1
+check "gh shim: a missing guard fails open" docker exec "$NAME" bash -c 'gh --version | grep -q "^gh version"'
+
+# No Gitea config at all (this container has none): skip is logged, nothing is registered or written.
+check "no GITEA_TOKEN: entrypoint logs Gitea access disabled" bash -c \
+  "docker logs '$NAME' 2>&1 | grep -q 'Gitea access disabled'"
+check "no GITEA_TOKEN: gitea MCP server is not registered" bash -c \
+  "! docker exec '$NAME' claude mcp get gitea"
+check "no GITEA_TOKEN: no Gitea credential section in .gitconfig" bash -c \
+  "! docker exec '$NAME' grep -q 'git.kiztigs.com\|gitea' /root/.gitconfig"
+
+# With GITEA_TOKEN: credential helper for that host only, no global helper, MCP registered once with no
+# secret frozen into .claude.json, launcher speaks MCP, and a second start changes nothing (idempotent).
+GITEA_NAME="${NAME}-gitea"
+new_home GITEA_HOME
+docker run -d --name "$GITEA_NAME" -v "$GITEA_HOME:/root" -e GITEA_TOKEN=smoketest-gitea-token \
+  -e GITEA_CLI_HOST=https://gitea.invalid -e GITEA_HOST=https://gitea.invalid "$TAG" >/dev/null 2>&1
+for _ in $(seq 1 30); do
+  docker exec "$GITEA_NAME" claude mcp get gitea >/dev/null 2>&1 && break
+  sleep 2
+done
+check "GITEA_TOKEN: gitea registered as a user-scope MCP server" docker exec "$GITEA_NAME" claude mcp get gitea
+check "GITEA_TOKEN: .gitconfig has the gt credential section for the Gitea host" docker exec "$GITEA_NAME" bash -c \
+  'git config --global --get-all credential.https://gitea.invalid.helper | grep -q "gt auth git-credential"'
+check "GITEA_TOKEN: no global credential.helper (neither tool wrote one)" docker exec "$GITEA_NAME" bash -c \
+  '! git config --global --get-all credential.helper | grep .'
+check "GITEA_TOKEN: the token is in neither .claude.json nor .gitconfig" docker exec "$GITEA_NAME" bash -c \
+  '! grep -rq smoketest-gitea-token /root/.claude.json /root/.gitconfig'
+docker cp "$REPO_ROOT/test/gitea_mcp_handshake.py" "$GITEA_NAME:/tmp/gitea_mcp_handshake.py" >/dev/null 2>&1
+check "GITEA_TOKEN: gitea-mcp answers MCP initialize + tools/list via the launcher" \
+  docker exec "$GITEA_NAME" python3 /tmp/gitea_mcp_handshake.py
+check "launcher refuses to start with no GITEA_TOKEN" docker exec "$GITEA_NAME" bash -c \
+  '! env -u GITEA_TOKEN /usr/local/lib/gitea-mcp-launch.sh </dev/null'
+docker restart "$GITEA_NAME" >/dev/null 2>&1
+sleep 5
+check "second start: still exactly one credential section and one registration" docker exec "$GITEA_NAME" bash -c \
+  '[ "$(git config --global --get-all credential.https://gitea.invalid.helper | grep -c "gt auth git-credential")" = 1 ] && claude mcp get gitea'
+docker rm -f "$GITEA_NAME" >/dev/null 2>&1
+remove_home "$GITEA_HOME"
+
 # SIGTERM stop time: PASS if docker stop completes in under 3 seconds.
 START_NS=$(date +%s%N)
 if docker stop "$NAME" >/dev/null 2>&1; then

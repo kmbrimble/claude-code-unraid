@@ -23,6 +23,22 @@ else
   echo "No GH_TOKEN set; autonomous push disabled."
 fi
 
+# Gitea (git.kiztigs.com): git credentials come from gt's credential helper, which reads GITEA_TOKEN
+# from the environment at git time (no OS keyring here, nothing written to disk but the helper line).
+# `gt auth setup-git` only edits ~/.gitconfig, so it needs no network and is idempotent; it adds a
+# per-host [credential "https://<host>"] section and leaves github.com's gh helper alone. Never fatal:
+# Gitea being unreachable or unconfigured must not stop the agent starting.
+gitea_host="${GITEA_CLI_HOST:-${GITEA_HOST:-}}"
+if [ -n "${GITEA_TOKEN:-}" ] && [ -n "$gitea_host" ]; then
+  if GITEA_CLI_HOST="$gitea_host" gt auth setup-git --no-input --host "$gitea_host" >/dev/null 2>&1; then
+    echo "Gitea git credentials configured for ${gitea_host}."
+  else
+    echo "WARN: gt auth setup-git failed for ${gitea_host}."
+  fi
+else
+  echo "No GITEA_TOKEN/GITEA_CLI_HOST set; Gitea access disabled."
+fi
+
 # Keep a long lived tmux server running for the agent session.
 tmux new-session -d -s claude -c /projects || true
 
@@ -98,6 +114,15 @@ if ! claude mcp get pal >/dev/null 2>&1; then
     -e LOG_LEVEL="${LOG_LEVEL}" \
     -- /opt/pal-mcp/venv/bin/pal-mcp-server >/dev/null 2>&1 \
     && echo "PAL MCP server registered." || echo "WARN: failed to register PAL MCP server."
+fi
+
+# Gitea MCP server (official gitea-mcp), same idempotent user-scope stdio pattern as PAL, and the
+# same rule: no `-e` flags, because they would be frozen into .claude.json. The launcher reads
+# GITEA_TOKEN / GITEA_HOST from this process's environment at launch (and maps the token to the
+# GITEA_ACCESS_TOKEN name gitea-mcp expects). Registered only when a token is present.
+if [ -n "${GITEA_TOKEN:-}" ] && ! claude mcp get gitea >/dev/null 2>&1; then
+  claude mcp add --scope user gitea -- /usr/local/lib/gitea-mcp-launch.sh >/dev/null 2>&1 \
+    && echo "Gitea MCP server registered." || echo "WARN: failed to register Gitea MCP server."
 fi
 
 # Auto-launch a detached `claude remote-control` (no tmux) for every project
