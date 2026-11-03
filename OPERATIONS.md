@@ -547,6 +547,64 @@ Not done, by design, until each repo's cut-over: rewrites of `issue-to-ship`, `i
 `new-project` and `/feature` (they only carry a "forge first" pointer); the `forge-release` skill
 (publishing to GitHub from mirrored repos); flipping the guard to deny; the triage token.
 
+## 4d. Skill-review loop (home-mount only, 3 Nov 2026)
+
+A Hermes-style learning loop: after a substantial session a background reviewer proposes new skills or
+patches to existing ones; nothing reaches `~/.claude/skills` without Kieren. Entirely on the persisted home
+mount, so it needs no image change and survives rebuilds. None of it is in this repo; this section is the
+record. Pre-change copies are in `~/.claude/.backups/skills-loop-20261103/` and `skills-loop2-20261103/`.
+
+| Piece | Where (under `~/.claude`) |
+|---|---|
+| `SessionEnd` launcher (about 10 ms, detaches the worker) | `hooks/skill-review-launch.sh` |
+| Worker: threshold, digest, reviewer or curator run, scan, promote, log | `skill-review/bin/run-review.sh` |
+| Tunables (thresholds, turn cap, timeout, budget, curator interval, retention) | `skill-review/config.env` |
+| Prompts | `skill-review/reviewer.md`, `curator.md` |
+| Queue and history | `skill-review/pending/`, `archive/{approved,rejected}/`, `quarantine/`, `review.log` |
+| Approve/reject/lock backend, linter, secret scan | `skill-review/bin/pending.sh`, `lint.py`, `scan.sh`; slash command `commands/skills-pending.md` |
+| Approval gate | `hooks/skills-gate.{sh,py}` (unit check: `skills-gate.test.sh`) |
+| Version control for skills | `skills/` is a local git repo, no remote; one commit per approved change |
+| Transcript search | `skills/session-search/` |
+
+How it runs: the launcher skips when `SKILL_REVIEW_RUN` or `SKILL_REVIEW_SKIP` is set (the worker exports the
+first; `review-lib/run-passes.sh` exports the second). `CLAUDE_CODE_CHILD_SESSION` is **not** usable as the
+guard: it is 1 in every hook command and in every connector session. The worker then skips trivial sessions
+(under `MIN_TOOL_CALLS` tool calls or `MIN_DIGEST_KB` of condensed digest; raw transcript size does not
+discriminate, since even "say hi" is about 400 KB), builds a digest, and runs `claude -p` on Sonnet with only
+Read and Write. Proposals are scanned (trufflehog plus a regex backstop) and promoted to `pending/`, or
+moved to `quarantine/`. Proposing nothing is the normal outcome. The same launcher starts the curator
+(`run-review.sh --curator`, proposals only) when `skill-review/.curator-stamp` is older than `CURATOR_DAYS`;
+the stamp is touched before the spawn so near-simultaneous sessions cannot double-fire it. The worker also
+prunes `run/` older than `RUN_KEEP_DAYS` and caps `reviewed.txt`. There is no cron in the container, which is
+why the curator is opportunistic.
+
+Approval is a real gate. `skills-gate` is a `PreToolUse` hook that returns `ask` for the proposal-apply and
+unlock subcommands of `pending.sh`, for Edit/Write/MultiEdit/NotebookEdit on `skills/**` (and the targets of
+symlinks inside it), the skill-review scripts and config, `locked.txt`, the launcher, the gate itself and
+`settings.json`, and for Bash that writes to those paths (matched per command segment). In `dontAsk` and
+`bypassPermissions` it returns `deny`, because nobody can answer a prompt. Interactive and Remote Control
+sessions show Kieren the prompt (verified in auto mode). It is guidance with teeth, not a sandbox: obfuscated
+shell can get past it, and it also fires on a command that merely quotes the trigger text. There is no off
+switch.
+
+Gotchas (all found on Claude Code 2.1.316):
+- **`Write(path)` allow rules are ignored; use `Edit(//abs/path/**)`**, which covers every file-writing tool.
+- **`~/.claude` is write-protected in headless `claude -p` whatever the allow rules or `--add-dir` say.** The
+  reviewer therefore writes to `/root/skill-review-stage/<run>/` (outside `~/.claude`) and `run-review.sh`
+  promotes scanned proposals to `pending/`.
+- **`--tools "Read,Write"` does not remove the `advisor` tool** when `settings.json` has `advisorModel`, so a
+  reviewer could spend the shared Fable allowance. The reviewer run passes `--settings '{"advisorModel":""}'`.
+  `--disallowed-tools advisor` is rejected.
+- `--max-turns` works but is not in `--help`; variadic flags (`--allowed-tools`) swallow a trailing prompt.
+- A nested `claude -p` needs the OAuth token recovered from `/proc/1/environ` (see §7); the worker does this.
+- **`rg` is not a binary.** Inside a session it is a shell function that runs `claude.exe` with `argv0=rg`
+  (ripgrep 14.1.1 embedded in the CLI). Scripts get GNU `grep`; the embedded route is an internal mechanism of
+  the CLI and not worth depending on.
+- SessionEnd hooks have a 1.5 s default budget (command, http and mcp_tool handlers only); the launcher
+  detaches immediately, with stdio redirected so exit is not held open by a pipe.
+
+Housekeeping not automated: `archive/` and `quarantine/` are never pruned (small).
+
 ## 5. The `/feature` workflow
 
 The standing primer is `~/.claude/commands/feature.md` — read it directly for the current text

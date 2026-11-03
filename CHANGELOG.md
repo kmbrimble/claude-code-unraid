@@ -6,6 +6,8 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Docs: skill-review loop recorded (OPERATIONS.md §4d).** Home-mount only (`~/.claude`); no image, entrypoint,
+  template or test change, so nothing needs a force-update.
 - **Gitea tooling alongside `gh` (stage 2 of the GitHub to Gitea migration).** Adds the official Gitea CLI
   `gt` 0.2.0 and `gitea-mcp` 1.12.0 (pinned, SHA256-verified; not "latest at build time", see OPERATIONS.md
   §4c). `entrypoint.sh`: when `GITEA_TOKEN` and `GITEA_CLI_HOST`/`GITEA_HOST` are set, `gt auth setup-git`
