@@ -216,3 +216,13 @@ Score the test-coverage-gap factor accordingly for anything outside that first l
 - Do not modify anything under `/projects/butler` or any other project from this repo's work.
 - Do not run `docker stop`, `docker rm`, `docker restart`, or similar against the `claude-code`
   container — these are denied in settings and would kill your own session anyway.
+
+## Where things are
+
+- What every project CLAUDE.md must contain: docs/claude-md-standard.md
+- Self-improving skills loop (build outcome and limits): docs/decisions/2026-11-03-self-improving-skills.md
+- Docker cleanup guard hook rewrite: docs/decisions/2026-10-30-docker-guard.md
+- Review routing by score and Mythos calibration: docs/decisions/2026-10-07-mythos-routing.md
+- Connector client timeout diagnosis: docs/decisions/2026-09-08-connector-timeouts.md
+- Review skills (three skills, scoring, scanner set): docs/decisions/2026-09-04-review-skills.md
+- PAL MCP integration decisions and supply-chain findings: docs/decisions/2026-09-03-pal-mcp.md
