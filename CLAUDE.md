@@ -226,3 +226,7 @@ Score the test-coverage-gap factor accordingly for anything outside that first l
 - Connector client timeout diagnosis: docs/decisions/2026-09-08-connector-timeouts.md
 - Review skills (three skills, scoring, scanner set): docs/decisions/2026-09-04-review-skills.md
 - PAL MCP integration decisions and supply-chain findings: docs/decisions/2026-09-03-pal-mcp.md
+- Review path guard (additionalDirectories, run-passes options, run-scanners.sh; open entrypoint mkdir item): docs/decisions/2026-09-15-review-path-guard.md
+- Scanner install verification (osv seeding command, cache path and size): docs/decisions/2026-09-05-scanner-install.md
+- Brief for the self-improving skills loop (acceptance tests, open-question defaults, linter criteria): docs/briefs/self-improving-skills-brief.md
+- Brief for the three code-review skills (rationale, rubric, counsel discipline, acceptance checklist): docs/briefs/review-skills-handoff-brief.md
