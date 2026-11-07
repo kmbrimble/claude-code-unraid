@@ -406,6 +406,30 @@ jq -r 'select(.event=="tool_call_end") | [.duration_ms, .tool, .outcome, .job_id
   connector-driven session therefore never prompts regardless of the allow list, so it can
   confirm MCP *availability* but tells you nothing about *permissions*. Use a direct
   `claude -p` invocation for that.
+- **Known trap: never wrap PAL (or any long-lived stdio MCP server) in `hl exec`.**
+  2026-11-07 ~19:22 AEST to 2026-11-08 06:56, every PAL connection timed out
+  (`CONNECT_TIMEOUT`, 30 s), in interactive and dispatched sessions alike.
+  - *Cause:* `/root/.claude/pal/run-pal.sh` had been changed to launch PAL via
+    `hl exec --secret ... -- pal-mcp-server`. `hl exec` runs its child with
+    `subprocess.run(capture_output=True)` and writes stdout only after the child exits, so the
+    MCP `initialize` reply never reached Claude. Repro: no reply in 15 s with stdin held open,
+    reply 0.3 s after stdin closed; PAL launched directly replied in 1.2 s. Earlier "PAL
+    starts in 1.9 s" checks missed it because they piped input and closed stdin.
+  - *Fix:* homelab-access commit `ad54bf2` adds `scripts/launchers/pal-mcp.py`, which resolves
+    `desktop-llm/api_key` in-process via `hl.secrets`, then `execve`s PAL (it starts without
+    the key if secretsman is unreachable). `run-pal.sh` is now just
+    `exec python3 -I .../pal-mcp.py`. Backup: `run-pal.sh.bak-20261108-065606-hlexec`.
+    `~/.claude.json` is unchanged.
+  - *Rule:* use a launcher that execs (as `ha-mcp.py` and `pal-mcp.py` do). Raising
+    `MCP_TIMEOUT` does not help.
+  - *Diagnose:* per-server connect logs are at
+    `~/.cache/claude-cli-nodejs/<cwd-slug>/mcp-logs-<server>/*.jsonl` ("Successfully connected
+    ... in Nms" vs `CONNECT_TIMEOUT`).
+  - *Verified 2026-11-08:* three `start_session` runs (permission default, and `allowedTools`
+    `Read,Edit,Write,Glob,Grep,Bash`) each connected `pal`, and `mcp__pal__version` and
+    `listmodels` succeeded (6 models).
+  - Unrelated: `lightroom` `CONNECTION_CLOSED` in sessions means the ssh to the Windows
+    desktop timed out (it was asleep). Expected and harmless unless the session uses Lightroom.
 
 ## 4b. uv-managed Python 3.14, and HA YAML linting (issue #18)
 
