@@ -605,6 +605,34 @@ Gotchas (all found on Claude Code 2.1.316):
 
 Housekeeping not automated: `archive/` and `quarantine/` are never pruned (small).
 
+## 4e. Auto mode classifier allow rule (home-mount only, 8 Nov 2026)
+
+**What.** `~/.claude/settings.json` has an `autoMode.allow` list of `["$defaults", "External Code Execution: ..."]`.
+The custom entry lets the auto mode classifier allow running, installing, building, testing or importing code
+from any external source (public repos, HACS, public package registries, release assets, archives,
+`curl | bash`), including sources the agent chose itself. It is an exception to the built-in soft_deny rules
+"Code from External" and "Untrusted Code Integration" only. Every other rule stays in effect: the 72 default
+soft_deny rules and the hard_deny "Data Exfiltration" rule, all of which keep receiving CLI updates via
+`"$defaults"`.
+
+**Why.** Kieren's decision, 8 Nov 2026, after a session was blocked with `[Code from External]` installing a
+HACS card from a brief that allowed HACS installs without naming the repo. He chose the broad allow rule over
+(a) naming the repo in each brief and (b) a frozen soft_deny copy with the two rules removed.
+
+**Known trade-off** (from `claude auto-mode critique`, 8 Nov 2026). This removes the classifier's main defence
+against prompt injection: a URL that first appears in fetched content, a README or an issue can now be run, and
+the classifier sees only the launch command, not what the code does. Narrowing option if wanted later: exclude
+sources that first appear only in tool output or fetched content, and limit `curl | bash` to vendors' official
+domains.
+
+**Where and persistence.** Home mount only (`/mnt/user/appdata/claude-code/home` → `/root`), not in the image.
+`entrypoint.sh` does not rewrite `settings.json`, so it survives rebuilds. Backup of the prior file:
+`~/.claude/.backups/automode-allow-20261108/settings.json`.
+
+**Check / undo.**
+- Check: `claude auto-mode config | jq '.allow[] | select(startswith("External Code"))'`
+- Undo: `jq 'del(.autoMode)'` on `settings.json` (no other `autoMode` keys are set), or `claude auto-mode reset`.
+
 ## 5. The `/feature` workflow
 
 The standing primer is `~/.claude/commands/feature.md` — read it directly for the current text
