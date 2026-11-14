@@ -538,9 +538,12 @@ connector's `run_command`, scripts) but cannot see the permission mode, so it on
 only wrong-forge repos in deny mode. Both fail open if the guard or `forge-map.json` is missing or
 crashes; `FORGE_GUARD=off` disables both. Rules: see the docstring of `forge-guard.py`. Verbs it treats
 as destructive (denied in bypassPermissions, ask otherwise): repo delete/transfer, release delete,
-mirror/token API writes, token creation, writes to CI workflow files (this deliberately also covers the
-Edit/Write tools, which the brief did not list; a headless `/feature` run therefore cannot edit a
-workflow file without Kieren). Edits to the guard take effect immediately, in the running session
+mirror/token API writes, token creation, and writes to **this repo's** CI workflow files (Edit/Write tools
+included). Since 15 Nov 2026 (Kieren: fixing a problem includes committing, merging, pushing and deploying
+without further approval) workflow edits in every other repo are allowed; only claude-code-unraid's stay
+guarded, because its workflows build this container's image. The same line is in the `autoMode.allow` rule
+in `~/.claude/settings.json` and the "Shipping" section of the global `CLAUDE.md`. Backups:
+`*.bak-20261115-deploy-autonomy` beside each file. Edits to the guard take effect immediately, in the running session
 too (settings are re-read), so test with piped JSON (`hooks/forge-guard.test.sh`) before relying on one.
 
 Not done, by design, until each repo's cut-over: rewrites of `issue-to-ship`, `issue-sprint`,
