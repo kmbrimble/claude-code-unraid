@@ -13,11 +13,11 @@ app, it breaks the agent. Be correspondingly conservative.
 
 - Repo (in container): `/projects/claude-code-unraid`
 - Forge: **Gitea is primary** (`https://git.kiztigs.com/kmbrimble/claude-code-unraid`, `origin`, gt credential helper; use `gt`, not `gh`, for issues and PRs); `github.com/kmbrimble/claude-code-unraid`
-  is a read-only push mirror (Gitea syncs on every push and every 10 minutes) whose only job is building the image: **never push to it** (the mirror force-syncs and prunes refs).
+  is a leftover push mirror and builds nothing (the image is built on Gitea, 15 Nov 2026): **never push to it** (the mirror force-syncs and prunes refs).
   `main` is protected: PR + the green `CI / check (pull_request)` (`.gitea/workflows/ci.yml`: Dockerfile lint at error level, shellcheck, script parse checks, connector `tsc`); butler-bot merges its own green PRs.
-  **A merge to `main` makes the mirror push to GitHub, whose `build.yml` then builds and publishes `:latest`** (as every push to main always did). That publishes only; the running container changes
+  **A merge to `main` runs `.gitea/workflows/image.yml` on the Gitea runner, which builds and publishes `git.kiztigs.com/kmbrimble/claude-code-unraid:latest`** (registry cache on the `buildcache` tag; login via the org Actions secret `REGISTRY_TOKEN`). That publishes only; the running container changes
   when Kieren force-updates it. GitHub has Issues, Wiki, Projects, Discussions and PRs switched off.
-- Published image: `ghcr.io/kmbrimble/claude-code-unraid:latest`
+- Published image: `git.kiztigs.com/kmbrimble/claude-code-unraid:latest` (Gitea container registry). The running container was created from the old GHCR image; switching it is a one-off, see "Switching the live container to the Gitea image" in OPERATIONS.md.
 - Live container: `claude-code` (this one)
 
 ## Test command

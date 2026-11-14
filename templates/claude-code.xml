@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>claude-code</Name>
-  <Repository>ghcr.io/kmbrimble/claude-code-unraid:latest</Repository>
-  <Registry>https://ghcr.io/</Registry>
+  <Repository>git.kiztigs.com/kmbrimble/claude-code-unraid:latest</Repository>
+  <Registry>https://git.kiztigs.com/kmbrimble/-/packages/container/claude-code-unraid</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <MyMAC/>

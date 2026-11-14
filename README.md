@@ -46,7 +46,7 @@ bash test/smoke.sh
 
 ## unRAID setup
 
-The published image is `ghcr.io/kmbrimble/claude-code-unraid:latest`. A ready-made Community
+The published image is `git.kiztigs.com/kmbrimble/claude-code-unraid:latest` (Gitea's container registry; the host must resolve `git.kiztigs.com`). A ready-made Community
 Applications template is checked into this repo at `templates/claude-code.xml` (secrets
 blanked) — import it, or configure the container manually with the settings below.
 
