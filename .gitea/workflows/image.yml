@@ -1,0 +1,71 @@
+name: Image
+
+# Builds the container image and pushes it to Gitea's container registry (git.kiztigs.com/kmbrimble/claude-code-unraid).
+# GHCR is no longer used for this image. Runs on a push to main and on demand.
+# workflow_dispatch: optional `ref` builds an existing branch or tag (e.g. to publish a pinned version tag) and tags it by its own name.
+# Auth: the job token (packages:write on this repo's own packages), no stored secret.
+# The job container gets the runner VM's own docker socket (runner config valid_volumes). A docker-container buildx builder
+# caches layers in the registry on the `buildcache` tag.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to build (empty = the ref the run was started on)'
+        required: false
+        default: ''
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      image: docker.gitea.com/runner-images:ubuntu-latest
+      options: --init
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    env:
+      REGISTRY: git.kiztigs.com
+      IMAGE: git.kiztigs.com/kmbrimble/claude-code-unraid
+      BUILD_REF: ${{ inputs.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Log in to the Gitea registry
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login "$REGISTRY" -u "$ACTOR" --password-stdin
+
+      - name: Set up buildx (docker-container builder)
+        run: docker buildx create --name gitea-builder --driver docker-container --use
+
+      - name: Work out the tags
+        run: |
+          SHORT=$(git rev-parse --short=7 HEAD)
+          TAGS="-t $IMAGE:sha-$SHORT"
+          if [ "$BUILD_REF" = main ]; then TAGS="$TAGS -t $IMAGE:latest"; fi
+          case "$BUILD_REF" in v[0-9]*) TAGS="$TAGS -t $IMAGE:${BUILD_REF#v}";; esac
+          {
+            echo "SHORT=$SHORT"
+            echo "TAGS=$TAGS"
+          } >> "$GITHUB_ENV"
+          echo "tags: $TAGS"
+
+      - name: Build and push
+        run: |
+          docker buildx build . --push $TAGS \
+            --cache-from "type=registry,ref=$IMAGE:buildcache" \
+            --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
+            --provenance=false
+
+      - name: Remove the builder
+        if: always()
+        run: docker buildx rm --force gitea-builder || true
