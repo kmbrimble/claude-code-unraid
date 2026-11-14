@@ -558,7 +558,16 @@ included). Since 15 Nov 2026 (Kieren: fixing a problem includes committing, merg
 without further approval) workflow edits in every other repo are allowed; only claude-code-unraid's stay
 guarded, because its workflows build this container's image. The same line is in the `autoMode.allow` rule
 in `~/.claude/settings.json` and the "Shipping" section of the global `CLAUDE.md`. Backups:
-`*.bak-20261115-deploy-autonomy` beside each file. Edits to the guard take effect immediately, in the running session
+`*.bak-20261115-deploy-autonomy` beside each file.
+
+**Worktree-first (15 Nov 2026, Kieren; denies in every permission mode).** Under `/projects`, a repo's primary checkout on
+`main`/`master` is shared by every session and is read-only for changes: forge-guard denies Edit/Write of a non-gitignored
+file in it, `git commit` / `cherry-pick` / `revert` / `am` / non-fast-forward `merge` there, and any `git push` of main/master
+(named, `HEAD:main`, or a bare push while on main). Linked worktrees (`/projects/.worktrees/<repo>-<slug>`) and separate
+clones on a feature branch are untouched; `git pull --ff-only` and `merge --ff-only` stay allowed. Opt-out: a Kieren-approved
+`"main_ok": [repo dir]` in `forge-guard.json`. Every kmbrimble Gitea repo now protects its default branch (exception:
+ha-blueiris-patched, whose upstream-sync job pushes main). Same rule in the global `CLAUDE.md` ("Worktree-first") and the
+`worktree-first` skill. Backups: `*.bak-20261115-worktree-first`. Edits to the guard take effect immediately, in the running session
 too (settings are re-read), so test with piped JSON (`hooks/forge-guard.test.sh`) before relying on one.
 
 Not done, by design, until each repo's cut-over: rewrites of `issue-to-ship`, `issue-sprint`,
