@@ -65,6 +65,10 @@ const MAX_WAIT_SECONDS = envInt("MAX_WAIT_SECONDS", 55);
 const IDLE_TIMEOUT_MS = envInt("IDLE_TIMEOUT_MS", 0, 0);
 // How long a killed job gets to exit on SIGTERM before it is SIGKILLed.
 const KILL_GRACE_MS = envInt("KILL_GRACE_MS", 10_000);
+// Ceiling on start_session/continue_session's timeout_seconds and idle_timeout_seconds: 24 h
+// (was 1 h, which killed long sessions with no documented reason). 86_400_000 ms is far
+// inside setTimeout's 2^31-1 ms limit. run_command keeps its own 1 h ceiling.
+const MAX_CLAUDE_SECONDS = 86_400;
 // Never read more than this from the tail of a session transcript: the live
 // ones reach tens of megabytes.
 const TAIL_BYTES = 256_000;
@@ -377,9 +381,8 @@ function runProcess(
     // Only a Claude job has a transcript. A shell job is judged on its output
     // alone, as run_command advertises — otherwise the newest-file fallback
     // would let an unrelated session in the same project keep it alive.
-    const fp = job.kind === "claude" ? await sessionLogPath(job) : null;
-    const st = fp ? await fs.stat(fp).catch(() => null) : null;
-    if (st && st.mtimeMs > job.lastActivity) { job.lastActivity = st.mtimeMs; return; }
+    const latest = job.kind === "claude" ? await sessionActivityMs(job) : 0;
+    if (latest > job.lastActivity) { job.lastActivity = latest; return; }
     if (Date.now() - job.lastActivity >= idleTimeoutMs) terminate("idle");
   }, 1000) : undefined;
 
@@ -443,6 +446,28 @@ async function sessionLogPath(job: Job): Promise<string | null> {
   // Nothing has been written since this job started: fall back to the named
   // file anyway, so a just-resumed session still shows its history.
   return best?.p ?? (preferredStat ? preferred : null);
+}
+
+/**
+ * Newest mtime (epoch ms) across everything the job's session is writing, or 0.
+ *
+ * That is the session transcript AND the transcripts of its subagents, which
+ * Claude Code writes to `<transcript without .jsonl>/subagents/agent-*.jsonl`.
+ * While a Task/subagent runs (a /feature review, say) the main transcript gets
+ * nothing — the tool_use is written at the start and the tool_result at the end —
+ * so judging liveness on the main file alone would kill a busy job as idle.
+ */
+async function sessionActivityMs(job: Job): Promise<number> {
+  const fp = await sessionLogPath(job);
+  if (!fp) return 0;
+  let newest = (await fs.stat(fp).catch(() => null))?.mtimeMs ?? 0;
+  const subDir = path.join(fp.slice(0, -".jsonl".length), "subagents");
+  for (const f of await fs.readdir(subDir).catch(() => [] as string[])) {
+    if (!f.endsWith(".jsonl")) continue;
+    const st = await fs.stat(path.join(subDir, f)).catch(() => null);
+    if (st && st.mtimeMs > newest) newest = st.mtimeMs;
+  }
+  return newest;
 }
 
 /** Shape one transcript JSONL line into a {role, ts, text} event, or null if it isn't one. */
@@ -538,7 +563,7 @@ function timeoutInfo(job: Job) {
     signal: job.signal ?? (job.escalated ? "SIGKILL" : "SIGTERM"),
     escalated: !!job.escalated,
     message: kind === "idle"
-      ? `Killed after ${seconds}s with no output and no session-transcript activity: ${ending}. Pass a larger idle_timeout_seconds (or 0 to disable the idle timer) for work that is legitimately quiet for long stretches.`
+      ? `Killed after ${seconds}s with no output and no session-transcript activity: ${ending}. Subagent transcripts count as activity. Pass a larger idle_timeout_seconds (or 0 to disable the idle timer) for work that is legitimately quiet for long stretches; continue_session with the same session_id resumes with full context.`
       : `Killed after exceeding its ${seconds}s wall-clock timeout: SIGTERM first, then SIGKILL if still alive — ${ending}. Pass a larger timeout_seconds next time to allow more time.`,
   };
 }
@@ -782,20 +807,24 @@ function buildServer(): McpServer {
       `runtime to MAX_WAIT_SECONDS (currently ${MAX_WAIT_SECONDS}s) because the MCP client gives up ` +
       `on a blocking call before then; the clamp is reported in the result and the job keeps running.`,
     ),
-    idle_timeout_seconds: z.number().min(0).max(3600).optional().describe(
-      `Kill the job after this many seconds with no output and no session-transcript activity — a ` +
-      `stalled job, as opposed to a merely long one. 0 disables it. If omitted, IDLE_TIMEOUT_MS ` +
-      `applies (currently ${IDLE_TIMEOUT_MS / 1000}s; 0 means no idle timer).`,
+    idle_timeout_seconds: z.number().min(0).max(MAX_CLAUDE_SECONDS).optional().describe(
+      `Kill the job after this many seconds with no output and no session-transcript activity (the ` +
+      `main transcript or any of its subagents' transcripts) — a stalled job, as opposed to a merely ` +
+      `long one. 0 disables it. If omitted, IDLE_TIMEOUT_MS applies (currently ${IDLE_TIMEOUT_MS / 1000}s; ` +
+      `0 means no idle timer). For a long run pass this explicitly, e.g. 1800: a single tool call can ` +
+      `legitimately write nothing for up to ~10 minutes (the Bash tool's own ceiling), so keep it well above that.`,
     ),
     progress_events: z.number().int().min(0).max(50).default(0).describe(
       "If >0, include the last N events from this session's live transcript in the result.",
     ),
-    timeout_seconds: z.number().min(10).max(3600).optional().describe(
+    timeout_seconds: z.number().min(10).max(MAX_CLAUDE_SECONDS).optional().describe(
       `Kill (SIGTERM, then SIGKILL after ${KILL_GRACE_MS / 1000}s if it hasn't exited) after this ` +
       `many seconds of wall clock. If omitted, the ` +
       `connector's effective default applies (currently ${DEFAULT_TIMEOUT_MS / 1000}s, set by the ` +
-      `DEFAULT_TIMEOUT_MS env var). A killed job's result explains the kill; pass a larger value here ` +
-      `for anything that might run long, such as a build.`,
+      `DEFAULT_TIMEOUT_MS env var). A killed job's result explains the kill. Up to ${MAX_CLAUDE_SECONDS}s ` +
+      `is accepted. Recommended pattern for a long run: pass a large timeout_seconds as a backstop ` +
+      `(e.g. 86400) together with an explicit idle_timeout_seconds (e.g. 1800), so the job is ended by ` +
+      `stalling rather than by elapsed time. continue_session with the same session_id resumes with full context.`,
     ),
   };
 
@@ -803,7 +832,7 @@ function buildServer(): McpServer {
     "start_session",
     {
       title: "Start a new Claude Code session",
-      description: "Create a new Claude Code session in a project folder and send it a prompt. Returns the session_id (use with continue_session) and the result. If it takes longer than wait_seconds, returns a job_id to poll with get_job.",
+      description: "Create a new Claude Code session in a project folder and send it a prompt. Returns the session_id (use with continue_session) and the result. If it takes longer than wait_seconds, returns a job_id to poll with get_job. For a long run pass idle_timeout_seconds (e.g. 1800) with a large timeout_seconds backstop (e.g. 86400); omit both for short work.",
       inputSchema: claudeCommon,
     },
     async (a) => {
@@ -828,7 +857,7 @@ function buildServer(): McpServer {
     "continue_session",
     {
       title: "Continue an existing Claude Code session",
-      description: "Resume an existing session by session_id (see list_sessions) and send it a new prompt, preserving its full context.",
+      description: "Resume an existing session by session_id (see list_sessions) and send it a new prompt, preserving its full context. Use it to carry on after a timeout or a cut-off call; the same session_id resumes where it stopped. Long runs: see start_session (idle_timeout_seconds + a large timeout_seconds backstop).",
       inputSchema: { ...claudeCommon, session_id: z.string().regex(SESSION_ID_RE, "session_id must be a UUID") },
     },
     async (a) => {

@@ -77,6 +77,9 @@ committing to a full smoke run.
      inside this container. Never raise it so a call can "just wait longer", and never hardcode
      a ceiling figure in the source — the ~60s that was documented for a year was measured at
      180s on 8 Sep 2026.
+   - Long Claude runs use `idle_timeout_seconds` (recommended 1800) plus a large `timeout_seconds`
+     backstop (up to 86400 since 0.39); never pass the wall clock as the only control, and the idle
+     check must keep counting subagent transcripts (`sessionActivityMs`). See the 2026-11-15 record.
    - `IDLE_TIMEOUT_MS` must keep defaulting to `0`. A non-zero built-in default would fire for
      callers who never asked for it and would blur what `DEFAULT_TIMEOUT_MS` means — the same
      shadowing trap that is why `timeout_seconds` has no per-tool default.
@@ -223,6 +226,7 @@ Score the test-coverage-gap factor accordingly for anything outside that first l
 - Self-improving skills loop (build outcome and limits): docs/decisions/2026-11-03-self-improving-skills.md
 - Docker cleanup guard hook rewrite: docs/decisions/2026-10-30-docker-guard.md
 - Review routing by score and Mythos calibration: docs/decisions/2026-10-07-mythos-routing.md
+- Long sessions: idle timeout as the control, 24 h wall-clock backstop, subagent activity: docs/decisions/2026-11-15-long-sessions-idle-timeout.md
 - Connector client timeout diagnosis: docs/decisions/2026-09-08-connector-timeouts.md
 - Review skills (three skills, scoring, scanner set): docs/decisions/2026-09-04-review-skills.md
 - PAL MCP integration decisions and supply-chain findings: docs/decisions/2026-09-03-pal-mcp.md
