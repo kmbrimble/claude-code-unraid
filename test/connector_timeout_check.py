@@ -15,7 +15,7 @@ Two modes, because they need incompatible container settings:
   --mode=idle <token> <idle-timeout-s>
       IDLE_TIMEOUT_MS kills a stalled job but spares a slow, still-active one
       (including one whose only activity is in subagent transcripts), and the
-      24 h timeout_seconds / idle_timeout_seconds ceilings (0.39).
+      24 h timeout_seconds / idle_timeout_seconds ceilings.
 """
 import json
 import re
@@ -316,7 +316,7 @@ def mode_idle(token, idle_s):
         sys.exit(f"FAIL: progress followed the stale session-id file instead of the one being written "
                  f"(sibling session {sibling.get('session_id')} is still live): {forked}")
 
-    # Subagent activity (0.39): the main transcript goes quiet after one event
+    # Subagent activity (15 Nov 2026): the main transcript goes quiet after one event
     # while a subagent writes <session>/subagents/agent-*.jsonl. That must count
     # as progress, or a long /feature review would be killed as idle.
     _, resp5 = call(token, sid, "tools/call", {
@@ -329,7 +329,7 @@ def mode_idle(token, idle_s):
     if sub.get("elapsed_seconds", 0) < idle_s * 2:
         sys.exit(f"FAIL: the subagent job didn't outlive the idle timeout, so it proves nothing: {sub}")
 
-    # Ceilings (0.39): timeout_seconds / idle_timeout_seconds go to 86400 on
+    # Ceilings: timeout_seconds / idle_timeout_seconds go to 86400 on
     # start_session and continue_session (they were capped at 3600), and no
     # further. Read from the live schema, then exercised for real.
     _, list_resp = call(token, sid, "tools/list", id_=10)

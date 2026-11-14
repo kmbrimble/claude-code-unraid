@@ -20,7 +20,7 @@ this doc holds only what those can't, because it spans Cowork and the container.
   both `get_job` and `list_jobs`. Check it before predicting anything about a job's fate — the
   absence of this field previously produced a confident wrong prediction (see below).
 - **Long autonomous runs: pass `timeout_seconds` explicitly.** *(Superseded in part by
-  [2026-11-15-long-sessions-idle-timeout.md](2026-11-15-long-sessions-idle-timeout.md): from 0.39 use an
+  [2026-11-15-long-sessions-idle-timeout.md](2026-11-15-long-sessions-idle-timeout.md): from 15 Nov 2026 use an
   explicit `idle_timeout_seconds` with a large `timeout_seconds` backstop, and the 3600 s cap is gone.)* The wall clock still defaults to
   30 min (`DEFAULT_TIMEOUT_MS`) and still kills. `idle_timeout_seconds` is the better tool
   where it fits — it judges a job on progress rather than elapsed time — but `IDLE_TIMEOUT_MS`

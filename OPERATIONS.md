@@ -218,17 +218,17 @@ can silently change installed tool versions if the image changed.
   job silently loses its work, that is the *second* one. A session once concluded the
   connector "cuts the connection after about four minutes", treated the chunking as the
   explanation, and carried on while its long jobs were being killed.
-- **Long runs: idle timeout as the control, wall clock as a backstop (0.39).** `start_session` /
+- **Long runs: idle timeout as the control, wall clock as a backstop (15 Nov 2026).** `start_session` /
   `continue_session` accept `timeout_seconds` and `idle_timeout_seconds` up to **86400**. Recommended
   call pattern:
 
   | Run | `idle_timeout_seconds` | `timeout_seconds` |
   |---|---|---|
-  | Long (`/feature`, night runs, anything that may pass 30 min) | `1800` | `86400` |
+  | Long (`/feature`, night runs, anything that may pass 30 min) | `3600` | `86400` |
   | Short | omit (no idle timer) | omit (`DEFAULT_TIMEOUT_MS`, 30 min) |
 
-  1800 s is three times the Bash tool's 10 min ceiling (a single tool call writes nothing to the
-  transcript while it runs), so a legitimately quiet stretch never trips it. The idle check watches
+  3600 s is three times the longest quiet tool call measured (20 min, a PAL call; foreground Bash is capped at 10 min), because a single tool call writes nothing to the
+  transcript while it runs, so a legitimately quiet stretch never trips it. The idle check watches
   the main transcript **and** every `<session>/subagents/agent-*.jsonl`. Details and evidence:
   `docs/decisions/2026-11-15-long-sessions-idle-timeout.md`. `IDLE_TIMEOUT_MS` deliberately stays 0
   (it would also apply to `run_command`). A killed run is not lost: `continue_session` with the same

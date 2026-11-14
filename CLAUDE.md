@@ -77,8 +77,8 @@ committing to a full smoke run.
      inside this container. Never raise it so a call can "just wait longer", and never hardcode
      a ceiling figure in the source — the ~60s that was documented for a year was measured at
      180s on 8 Sep 2026.
-   - Long Claude runs use `idle_timeout_seconds` (recommended 1800) plus a large `timeout_seconds`
-     backstop (up to 86400 since 0.39); never pass the wall clock as the only control, and the idle
+   - Long Claude runs use `idle_timeout_seconds` (recommended 3600) plus a large `timeout_seconds`
+     backstop (up to 86400 since 15 Nov 2026); never pass the wall clock as the only control, and the idle
      check must keep counting subagent transcripts (`sessionActivityMs`). See the 2026-11-15 record.
    - `IDLE_TIMEOUT_MS` must keep defaulting to `0`. A non-zero built-in default would fire for
      callers who never asked for it and would blur what `DEFAULT_TIMEOUT_MS` means — the same
@@ -88,7 +88,7 @@ committing to a full smoke run.
      real work and holds the pipe open so `close` never fires; setting the status when the
      timer fires rather than when the process exits makes the SIGTERM-then-SIGKILL escalation
      unobservable.
-   `test/smoke.sh` and `test/connector_timeout_check.py` guard all three; do not weaken them.
+   `test/smoke.sh` and `test/connector_timeout_check.py` guard all of these; do not weaken them.
 10. **The connector log must never contain the bearer token, the `Authorization` header,
     request or response bodies, tool arguments (values), tool output or full session ids.**
     Added in 0.34. Implemented in `connector/src/index.ts` (the "Structured log" block, the

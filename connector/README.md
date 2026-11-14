@@ -28,8 +28,8 @@ session transcript of a running Claude job, which is otherwise silent until it f
 Jobs are killed with SIGTERM then SIGKILL after `KILL_GRACE_MS` (default 10s), on the
 wall clock (`timeout_seconds` / `DEFAULT_TIMEOUT_MS`) or, if enabled, on no progress
 (`idle_timeout_seconds` / `IDLE_TIMEOUT_MS`, default 0 = off). See OPERATIONS.md §4.
-For long Claude runs pass `idle_timeout_seconds: 1800` with `timeout_seconds: 86400` (both accept up
-to 86400 on `start_session` / `continue_session`): a stalled job is ended after 30 quiet minutes,
+For long Claude runs pass `idle_timeout_seconds: 3600` with `timeout_seconds: 86400` (both accept up
+to 86400 on `start_session` / `continue_session`): a stalled job is ended after an hour of silence,
 a busy one is never ended by elapsed time. Subagent transcripts count as activity. If a run does die,
 `continue_session` with the same `session_id` resumes with full context.
 

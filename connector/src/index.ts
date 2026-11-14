@@ -811,8 +811,8 @@ function buildServer(): McpServer {
       `Kill the job after this many seconds with no output and no session-transcript activity (the ` +
       `main transcript or any of its subagents' transcripts) — a stalled job, as opposed to a merely ` +
       `long one. 0 disables it. If omitted, IDLE_TIMEOUT_MS applies (currently ${IDLE_TIMEOUT_MS / 1000}s; ` +
-      `0 means no idle timer). For a long run pass this explicitly, e.g. 1800: a single tool call can ` +
-      `legitimately write nothing for up to ~10 minutes (the Bash tool's own ceiling), so keep it well above that.`,
+      `0 means no idle timer). For a long run pass this explicitly, e.g. 3600: a single tool call can ` +
+      `legitimately write nothing for 10-20 minutes (a foreground Bash call is capped at 10; a slow PAL call took 20), so keep it well above that.`,
     ),
     progress_events: z.number().int().min(0).max(50).default(0).describe(
       "If >0, include the last N events from this session's live transcript in the result.",
@@ -823,7 +823,7 @@ function buildServer(): McpServer {
       `connector's effective default applies (currently ${DEFAULT_TIMEOUT_MS / 1000}s, set by the ` +
       `DEFAULT_TIMEOUT_MS env var). A killed job's result explains the kill. Up to ${MAX_CLAUDE_SECONDS}s ` +
       `is accepted. Recommended pattern for a long run: pass a large timeout_seconds as a backstop ` +
-      `(e.g. 86400) together with an explicit idle_timeout_seconds (e.g. 1800), so the job is ended by ` +
+      `(e.g. 86400) together with an explicit idle_timeout_seconds (e.g. 3600), so the job is ended by ` +
       `stalling rather than by elapsed time. continue_session with the same session_id resumes with full context.`,
     ),
   };
@@ -832,7 +832,7 @@ function buildServer(): McpServer {
     "start_session",
     {
       title: "Start a new Claude Code session",
-      description: "Create a new Claude Code session in a project folder and send it a prompt. Returns the session_id (use with continue_session) and the result. If it takes longer than wait_seconds, returns a job_id to poll with get_job. For a long run pass idle_timeout_seconds (e.g. 1800) with a large timeout_seconds backstop (e.g. 86400); omit both for short work.",
+      description: "Create a new Claude Code session in a project folder and send it a prompt. Returns the session_id (use with continue_session) and the result. If it takes longer than wait_seconds, returns a job_id to poll with get_job. For a long run pass idle_timeout_seconds (e.g. 3600) with a large timeout_seconds backstop (e.g. 86400); omit both for short work.",
       inputSchema: claudeCommon,
     },
     async (a) => {

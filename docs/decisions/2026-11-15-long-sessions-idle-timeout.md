@@ -1,6 +1,6 @@
 # Long sessions: idle timeout as the control, wall clock as a backstop (15 Nov 2026)
 
-Status: implemented in connector 0.39. Supersedes in part
+Status: implemented (changelog entry 15 Nov 2026). Supersedes in part
 [2026-09-08-connector-timeouts.md](2026-09-08-connector-timeouts.md) (its "pass `timeout_seconds`
 explicitly" advice for long runs).
 
@@ -24,16 +24,29 @@ activity is in `subagents/` was killed as `idle` after 2 s. Fix: `sessionActivit
 mtime over the main transcript and every `subagents/*.jsonl` of the same session. (Other siblings of the
 transcript, e.g. `tool-results/`, are tool output spill files, not liveness, and are ignored.)
 
-**1b. A single long tool call is quiet.** Nothing is written to any transcript while one tool call runs.
-The Bash tool's own limits are Claude Code's documented defaults: 2 min default, **10 min maximum**
-(`BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS`; neither is set in this container, and I could not
-read the effective values out of the minified binary, so the 10 min figure is the documented default,
-not something observed here). A longer command has to be a background task, which returns at once and
-leaves the transcript active as the model polls it. So the longest legitimately quiet stretch from a
-tool is about 10 min, plus model/API latency on either side. I considered treating "a child process of
-the job is still running" as activity and did not do it: it is not robust (a hung child looks alive
-forever, which is the exact failure idle detection exists to catch) and it needs process-tree
-inspection. A correctly sized idle value is the whole mechanism.
+**1b. A single long tool call is quiet; measured.** Nothing is written to any transcript while one tool
+call runs. I paired every `tool_use` with its `tool_result` across all 1722 transcripts on the persisted
+mount (main and `subagents/`, 21 587 pairs) and took the gap:
+
+| Tool | pairs | longest gap | p99 |
+|---|---|---|---|
+| Bash (foreground) | 18 588 | 10.0 min (exactly, repeatedly: the 600 000 ms ceiling; 8 of 10 gaps over 10 min sit there) | 4.3 min |
+| `mcp__pal__thinkdeep` | 2 | **20.0 min** | 7.8 min |
+| Agent (Task) | 33 | 8.3 min | 5.5 min |
+| other tools (Skill, PAL consensus/codereview, Read, browser, web) | | under 2.5 min | |
+
+Two Bash gaps (45 and 350 min) are session pauses, not a running command (a foreground Bash call is
+bounded by its 10 min ceiling; this container sets neither `BASH_DEFAULT_TIMEOUT_MS` nor
+`BASH_MAX_TIMEOUT_MS`). The exception that matters is a slow PAL call: 20 min once. Background tasks
+(`run_in_background`) return at once, so they do not extend a quiet stretch by themselves; what a
+headless `claude -p` job writes while it waits on a background task or Monitor was **not** verified.
+Hence the recommended idle value is **3600 s**: three times the longest single tool call seen, and the
+same as the old wall-clock cap, so a stalled run is ended within an hour rather than burning the day.
+I considered treating "a child process of the job is still running" as activity and did not: it is not
+robust (a hung child looks alive forever, the exact failure idle detection exists to catch) and needs
+process-tree inspection. Only `subagents/` holds extra transcripts inside a session directory (the other
+subdirectory, `tool-results/`, holds spilled tool output, not liveness), so that is all
+`sessionActivityMs` adds.
 
 ## Decisions
 
@@ -48,17 +61,17 @@ inspection. A correctly sized idle value is the whole mechanism.
   asked for; and CLAUDE.md constraint 9 already forbids a non-zero built-in. Callers who want stall
   detection pass `idle_timeout_seconds` explicitly, and the tool descriptions now say so.
 - **Recommended pattern.** Long Claude runs (/feature, night runs, anything that may exceed 30 min):
-  `idle_timeout_seconds: 1800` and `timeout_seconds: 86400`. 1800 s is three times the 10 min tool
-  ceiling; a run that is genuinely stalled is ended within 30 min instead of burning the day, and a busy
-  one is never ended by elapsed time. Short work: omit both (30 min wall clock via `DEFAULT_TIMEOUT_MS`,
-  no idle timer), or `idle_timeout_seconds: 300` with `timeout_seconds: 1800`-ish if stall detection
-  matters. If a run does die (idle or backstop), `continue_session` with the same `session_id` resumes
+  `idle_timeout_seconds: 3600` and `timeout_seconds: 86400`. 3600 s is three times the longest quiet tool
+  call measured (20 min, a PAL call); a genuinely stalled run is ended within an hour instead of burning
+  the day, and a busy one is never ended by elapsed time. Short work: omit both (30 min wall clock via `DEFAULT_TIMEOUT_MS`,
+  no idle timer), or `idle_timeout_seconds: 300` if stall detection matters. If a run does die (idle or backstop), `continue_session` with the same `session_id` resumes
   with the full context, so no "progress file and re-read the docs" workaround is needed for the
   timeout reason (a progress file can still be worth keeping for humans).
 
 ## Not verified
 
-- Effective `BASH_MAX_TIMEOUT_MS` of the claude binary (see 1b).
+- Transcript behaviour of a headless job waiting on a background task or Monitor (see 1b).
+- Live subagent write cadence: evidenced by one on-disk example plus the stub, not a live run.
 - That the live claude.ai client forwards values above 3600; the connector schema accepts them
   (smoke-tested), the client side is not observable from here.
 - Takes effect on the running connector only after the image is rebuilt and the container force-updated.

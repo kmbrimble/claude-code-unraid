@@ -666,7 +666,7 @@ docker run -d --name "$IDLE_NAME" -v "$IDLE_HOME:/root" \
   -e CLAUDE_BIN=/root/.local/bin/fake-claude "$TAG" >/dev/null 2>&1
 sleep 3
 install_connector_fixtures "$IDLE_NAME"
-check "connector's IDLE_TIMEOUT_MS kills a stalled job and spares a slow but transcript-active one" \
+check "connector's IDLE_TIMEOUT_MS kills a stalled job, spares a transcript-active or subagent-only one, and accepts 24 h timeout_seconds/idle_timeout_seconds (rejecting more)" \
   docker exec "$IDLE_NAME" python3 /tmp/connector_timeout_check.py \
     --mode=idle "$TIMEOUT_TOKEN" "$((IDLE_MS / 1000))"
 docker rm -f "$IDLE_NAME" >/dev/null 2>&1

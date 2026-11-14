@@ -6,6 +6,16 @@ is only ever advanced manually. Newest at top.
 
 ## [Unreleased]
 
+- **Long connector sessions no longer die at one hour (connector).** `start_session` / `continue_session`
+  `timeout_seconds` and `idle_timeout_seconds` now accept up to 86400 (were capped at 3600 since the
+  first commit); `run_command` is unchanged. **The idle timer now counts subagent transcripts**
+  (`<session>/subagents/agent-*.jsonl`) as activity: before, a long subagent run (a `/feature` review)
+  left the main transcript quiet and would have been killed as idle. Tool descriptions teach the
+  pattern: `idle_timeout_seconds: 3600` with `timeout_seconds: 86400` for long runs, both omitted for
+  short ones. `IDLE_TIMEOUT_MS` still defaults to 0. Tests: `connector_timeout_check.py --mode=idle`
+  covers subagent activity, the 86400 ceiling and rejection of 86401, and an explicit idle kill under a
+  24 h backstop. Decision record: `docs/decisions/2026-11-15-long-sessions-idle-timeout.md`. Takes effect
+  on the next force-update; no env or template change.
 - **Docs: skill-review loop recorded (OPERATIONS.md §4d).** Home-mount only (`~/.claude`); no image, entrypoint,
   template or test change, so nothing needs a force-update.
 - **Gitea tooling alongside `gh` (stage 2 of the GitHub to Gitea migration).** Adds the official Gitea CLI
@@ -75,19 +85,6 @@ is only ever advanced manually. Newest at top.
   deliberately not merged: site-specific mounts and values stay out of the committed template
   (OPERATIONS.md, "Site-specific mounts, not template entries"; 0.33), and this repo is public.
   The host's `WebUI` entry is stale (it still names the removed `ttyd` port) and was not carried over.
-
-## 0.39 (2026-11-15)
-
-- **Long connector sessions no longer die at one hour.** `start_session` / `continue_session`
-  `timeout_seconds` and `idle_timeout_seconds` now accept up to 86400 (were capped at 3600 since the
-  first commit); `run_command` is unchanged. **The idle timer now counts subagent transcripts**
-  (`<session>/subagents/agent-*.jsonl`) as activity: before, a long subagent run (a `/feature` review)
-  left the main transcript quiet and would have been killed as idle. Tool descriptions teach the
-  pattern: `idle_timeout_seconds: 1800` with `timeout_seconds: 86400` for long runs, both omitted for
-  short ones. `IDLE_TIMEOUT_MS` still defaults to 0. Tests: `connector_timeout_check.py --mode=idle`
-  covers subagent activity, the 86400 ceiling and rejection of 86401, and an explicit idle kill under a
-  24 h backstop. Decision record: `docs/decisions/2026-11-15-long-sessions-idle-timeout.md`. Takes effect
-  on the next force-update; no env or template change.
 
 ## 0.38 (2026-10-30)
 
