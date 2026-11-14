@@ -12,7 +12,7 @@ agent session runs inside when working via the Claude Code CLI MCP connector.
 
 - Repo (in container): `/projects/claude-code-unraid`
 - GitHub: `kmbrimble/claude-code-unraid`
-- Published image: `ghcr.io/kmbrimble/claude-code-unraid:latest`
+- Published image: `git.kiztigs.com/kmbrimble/claude-code-unraid:latest` (Gitea container registry)
 - Live container name: `claude-code`
 - Host: unRAID at `192.168.0.10` (check the running version with `cat /etc/unraid-version`; it was 7.3.4 on 15 Nov 2026) (no `python3` on the host — run Python inside the
   container, not via host SSH).
@@ -768,6 +768,27 @@ is not guaranteed forever: the local tag is the real safety net.
 
 The home-mount changes of stage 2 (skills, hook, `forge-map.json`) are independent of the image
 and need no rollback with it; the hook and `gh` shim fail open when their files are missing.
+
+## 6c. Switching the live container to the Gitea image (one-off, GitHub exit)
+
+Since 15 Nov 2026 the image is built by `.gitea/workflows/image.yml` and published to Gitea's container registry as
+`git.kiztigs.com/kmbrimble/claude-code-unraid:latest` (plus `sha-<7>`). The running `claude-code` container still has the
+old GHCR image; nothing changes until it is recreated. Recreating it **drops every session and both connectors**, so Kieren
+picks the moment; do not do this from inside the container.
+
+1. Check the image is there and pulls anonymously from the host (empty docker config, so no stored login is used):
+   `ssh unraid 'DOCKER_CONFIG=$(mktemp -d) docker pull git.kiztigs.com/kmbrimble/claude-code-unraid:latest'`
+   (the host resolves `git.kiztigs.com` through `/boot/config/go`). Compare the digest with the latest green `Image` run (`gt run list -R kmbrimble/claude-code-unraid`).
+2. Keep a rollback image: `docker tag <current image id> claude-code-rollback:pre-gitea` (`rebuild_container` removes the old image when the ID changes).
+3. Back up and edit the host template (constraint 8: `/boot` is permanent): copy `/boot/config/plugins/dockerMan/templates-user/my-claude-code.xml` to
+   `my-claude-code.xml.bak-<date>`, then set `<Repository>` to `git.kiztigs.com/kmbrimble/claude-code-unraid:latest` and `<Registry>` to
+   `https://git.kiztigs.com/kmbrimble/-/packages/container/claude-code-unraid`. The tracked copy in this repo, `templates/claude-code.xml`, already says this.
+4. Recreate with dockerMan's own script, using the image pulled in step 1 (no second pull): on the host,
+   `/usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container claude-code`
+   (`claude-code` is in the autostart list, so it is not stopped afterwards). `update_container` would pull again; either works.
+5. Verify from outside the container: `docker ps` shows `git.kiztigs.com/kmbrimble/claude-code-unraid:latest` Up and `docker inspect claude-code --format '{{.State.StartedAt}}'` is new;
+   the connector answers (`hl show claude-connector` probe); a new session starts; `gt api user` works inside it; the Zabbix/Grafana container-down alert did not fire for longer than the restart.
+6. Rollback: restore the `.bak` template (or point `<Repository>` at the tagged rollback image) and `rebuild_container claude-code` again.
 
 ## 6a. Keeping Claude Code current
 
