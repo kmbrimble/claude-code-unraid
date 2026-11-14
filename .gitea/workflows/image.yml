@@ -3,7 +3,7 @@ name: Image
 # Builds the container image and pushes it to Gitea's container registry (git.kiztigs.com/kmbrimble/claude-code-unraid).
 # GHCR is no longer used for this image. Runs on a push to main and on demand.
 # workflow_dispatch: optional `ref` builds an existing branch or tag (e.g. to publish a pinned version tag) and tags it by its own name.
-# Auth: the job token (packages:write on this repo's own packages), no stored secret.
+# Auth: org Actions secret REGISTRY_TOKEN (butler-bot's token; Gitea's registry token endpoint rejects job tokens), user butler-bot.
 # The job container gets the runner VM's own docker socket (runner config valid_volumes). A docker-container buildx builder
 # caches layers in the registry on the `buildcache` tag.
 on:
@@ -40,9 +40,8 @@ jobs:
 
       - name: Log in to the Gitea registry
         env:
-          TOKEN: ${{ secrets.GITEA_TOKEN }}
-          ACTOR: ${{ github.actor }}
-        run: echo "$TOKEN" | docker login "$REGISTRY" -u "$ACTOR" --password-stdin
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: echo "$TOKEN" | docker login "$REGISTRY" -u butler-bot --password-stdin
 
       - name: Set up buildx (docker-container builder)
         run: docker buildx create --name gitea-builder --driver docker-container --use
