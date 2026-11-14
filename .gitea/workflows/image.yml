@@ -31,6 +31,7 @@ jobs:
         - /var/run/docker.sock:/var/run/docker.sock
     env:
       REGISTRY: git.kiztigs.com
+      BUILDER: gitea-builder-${{ github.run_id }}
       IMAGE: git.kiztigs.com/kmbrimble/claude-code-unraid
       BUILD_REF: ${{ inputs.ref || github.ref_name }}
     steps:
@@ -44,7 +45,7 @@ jobs:
         run: echo "$TOKEN" | docker login "$REGISTRY" -u butler-bot --password-stdin
 
       - name: Set up buildx (docker-container builder)
-        run: docker buildx create --name gitea-builder --driver docker-container --use
+        run: docker buildx create --name "$BUILDER" --driver docker-container --use
 
       - name: Work out the tags
         run: |
@@ -67,4 +68,4 @@ jobs:
 
       - name: Remove the builder
         if: always()
-        run: docker buildx rm --force gitea-builder || true
+        run: docker buildx rm --force "$BUILDER" || true
