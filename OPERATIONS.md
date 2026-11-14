@@ -218,6 +218,21 @@ can silently change installed tool versions if the image changed.
   job silently loses its work, that is the *second* one. A session once concluded the
   connector "cuts the connection after about four minutes", treated the chunking as the
   explanation, and carried on while its long jobs were being killed.
+- **Long runs: idle timeout as the control, wall clock as a backstop (15 Nov 2026).** `start_session` /
+  `continue_session` accept `timeout_seconds` and `idle_timeout_seconds` up to **86400**. Recommended
+  call pattern:
+
+  | Run | `idle_timeout_seconds` | `timeout_seconds` |
+  |---|---|---|
+  | Long (`/feature`, night runs, anything that may pass 30 min) | `3600` | `86400` |
+  | Short | omit (no idle timer) | omit (`DEFAULT_TIMEOUT_MS`, 30 min) |
+
+  3600 s is three times the longest quiet tool call measured (20 min, a PAL call; foreground Bash is capped at 10 min), because a single tool call writes nothing to the
+  transcript while it runs, so a legitimately quiet stretch never trips it. The idle check watches
+  the main transcript **and** every `<session>/subagents/agent-*.jsonl`. Details and evidence:
+  `docs/decisions/2026-11-15-long-sessions-idle-timeout.md`. `IDLE_TIMEOUT_MS` deliberately stays 0
+  (it would also apply to `run_command`). A killed run is not lost: `continue_session` with the same
+  `session_id` resumes with full context. `run_command` keeps its 3600 s ceiling.
 - **Job timeout (`DEFAULT_TIMEOUT_MS`).** Applies when a caller omits `timeout_seconds`.
   Set in the unRAID template — **the value is in MILLISECONDS** (`1800000` = 30 minutes);
   `1800` would be 1.8 seconds. The built-in fallback is also 30 minutes as of 0.26 (it was

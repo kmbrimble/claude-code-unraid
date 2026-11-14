@@ -13,7 +13,9 @@ Two modes, because they need incompatible container settings:
       the deadline fields, and live transcript progress.
 
   --mode=idle <token> <idle-timeout-s>
-      IDLE_TIMEOUT_MS kills a stalled job but spares a slow, still-active one.
+      IDLE_TIMEOUT_MS kills a stalled job but spares a slow, still-active one
+      (including one whose only activity is in subagent transcripts), and the
+      24 h timeout_seconds / idle_timeout_seconds ceilings.
 """
 import json
 import re
@@ -23,7 +25,9 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-BASE = "http://127.0.0.1:8765/mcp"
+import os
+
+BASE = os.environ.get("CONNECTOR_URL", "http://127.0.0.1:8765/mcp")
 
 
 def call(token, session_id, method, params=None, id_=None, timeout=30):
@@ -311,6 +315,63 @@ def mode_idle(token, idle_s):
     if not tpath.endswith("0f0f0f0f-1111-4222-8333-444444444444-fork.jsonl"):
         sys.exit(f"FAIL: progress followed the stale session-id file instead of the one being written "
                  f"(sibling session {sibling.get('session_id')} is still live): {forked}")
+
+    # Subagent activity (15 Nov 2026): the main transcript goes quiet after one event
+    # while a subagent writes <session>/subagents/agent-*.jsonl. That must count
+    # as progress, or a long /feature review would be killed as idle.
+    _, resp5 = call(token, sid, "tools/call", {
+        "name": "start_session",
+        "arguments": {"project": "smoketest-idle", "prompt": "SUBAGENT=1 SLEEP=8", "wait_seconds": 20},
+    }, id_=9, timeout=45)
+    sub = tool_result(resp5)
+    if sub.get("status") != "done":
+        sys.exit(f"FAIL: a job whose only activity is in subagent transcripts was killed as idle: {sub}")
+    if sub.get("elapsed_seconds", 0) < idle_s * 2:
+        sys.exit(f"FAIL: the subagent job didn't outlive the idle timeout, so it proves nothing: {sub}")
+
+    # Ceilings: timeout_seconds / idle_timeout_seconds go to 86400 on
+    # start_session and continue_session (they were capped at 3600), and no
+    # further. Read from the live schema, then exercised for real.
+    _, list_resp = call(token, sid, "tools/list", id_=10)
+    tools = {t["name"]: t for t in list_resp["result"]["tools"]}
+    for tool in ("start_session", "continue_session"):
+        props = tools[tool]["inputSchema"]["properties"]
+        for field in ("timeout_seconds", "idle_timeout_seconds"):
+            if props[field].get("maximum") != 86400:
+                sys.exit(f"FAIL: {tool}.{field} maximum should be 86400, got {props[field].get('maximum')}")
+    if tools["run_command"]["inputSchema"]["properties"]["timeout_seconds"].get("maximum") != 3600:
+        sys.exit("FAIL: run_command timeout_seconds ceiling should be unchanged at 3600")
+    if "idle_timeout_seconds" not in tools["start_session"]["inputSchema"]["properties"]["timeout_seconds"]["description"]:
+        sys.exit("FAIL: start_session timeout_seconds description doesn't teach the idle_timeout_seconds + backstop pattern")
+
+    _, resp6 = call(token, sid, "tools/call", {
+        "name": "start_session",
+        "arguments": {"project": "smoketest-idle", "prompt": "SLEEP=1", "timeout_seconds": 86400,
+                      "idle_timeout_seconds": 7200, "wait_seconds": 20},
+    }, id_=11, timeout=45)
+    long_job = tool_result(resp6)
+    if long_job.get("status") != "done" or long_job.get("timeout_seconds") != 86400 or long_job.get("idle_timeout_seconds") != 7200:
+        sys.exit(f"FAIL: timeout_seconds=86400 / idle_timeout_seconds=7200 not accepted and reported: {long_job}")
+
+    _, resp7 = call(token, sid, "tools/call", {
+        "name": "start_session",
+        "arguments": {"project": "smoketest-idle", "prompt": "SLEEP=1", "timeout_seconds": 86401, "wait_seconds": 5},
+    }, id_=12, timeout=30)
+    over = resp7.get("result", {})
+    if not (resp7.get("error") or over.get("isError")):
+        sys.exit(f"FAIL: timeout_seconds=86401 should be rejected: {resp7}")
+
+    # The explicit long-run pattern still kills a stall: idle 3s overrides the
+    # connector default (2s) and the 24 h wall clock is nowhere near.
+    _, resp8 = call(token, sid, "tools/call", {
+        "name": "start_session",
+        "arguments": {"project": "smoketest-idle", "prompt": "SLEEP=30", "timeout_seconds": 86400,
+                      "idle_timeout_seconds": 3, "wait_seconds": 20},
+    }, id_=13, timeout=45)
+    explicit = tool_result(resp8)
+    if explicit.get("status") != "timeout" or (explicit.get("timeout") or {}).get("kind") != "idle" \
+            or abs((explicit.get("timeout") or {}).get("seconds", -1) - 3) > 0.5:
+        sys.exit(f"FAIL: explicit idle_timeout_seconds=3 with a 24 h backstop didn't kill the stall as idle at 3s: {explicit}")
 
     print("OK: stalled job killed by idle timer", stalled["timeout"],
           "; transcript-active job survived", active["elapsed_seconds"], "s")

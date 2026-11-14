@@ -597,6 +597,17 @@ if [[ "$prompt" == *TRAP_TERM=1* ]]; then
   event "ignoring SIGTERM"
   end=$((SECONDS + secs))
   while ((SECONDS < end)); do :; done
+elif [[ "$prompt" == *SUBAGENT=1* ]]; then
+  # A long Task/subagent run: the main transcript gets one event and then goes
+  # quiet, while the subagent writes its own file under <session>/subagents/.
+  # Only an idle check that watches the subagent transcripts spares this job.
+  event "subagent launched"
+  subdir="${log%.jsonl}/subagents"
+  mkdir -p "$subdir"
+  for ((i = 0; i < secs * 4; i++)); do
+    sleep 0.25
+    echo "{\"type\":\"assistant\",\"timestamp\":\"$(date -Is)\",\"isSidechain\":true}" >> "$subdir/agent-a1b2c3.jsonl"
+  done
 elif [[ "$prompt" == *ACTIVE=1* ]]; then
   # Heartbeat well inside the idle timeout the tests use: a 1s beat against a
   # 2s timer left only 1s of slack and flaked on a loaded host.
@@ -655,7 +666,7 @@ docker run -d --name "$IDLE_NAME" -v "$IDLE_HOME:/root" \
   -e CLAUDE_BIN=/root/.local/bin/fake-claude "$TAG" >/dev/null 2>&1
 sleep 3
 install_connector_fixtures "$IDLE_NAME"
-check "connector's IDLE_TIMEOUT_MS kills a stalled job and spares a slow but transcript-active one" \
+check "connector's IDLE_TIMEOUT_MS kills a stalled job, spares a transcript-active or subagent-only one, and accepts 24 h timeout_seconds/idle_timeout_seconds (rejecting more)" \
   docker exec "$IDLE_NAME" python3 /tmp/connector_timeout_check.py \
     --mode=idle "$TIMEOUT_TOKEN" "$((IDLE_MS / 1000))"
 docker rm -f "$IDLE_NAME" >/dev/null 2>&1
