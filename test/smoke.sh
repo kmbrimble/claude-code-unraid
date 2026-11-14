@@ -82,8 +82,8 @@ check() {
 # layer most likely to need deliberate invalidation; keeping it after the
 # ~130MB Android cmdline-tools RUN means busting it doesn't drag that layer
 # down too).
-WORKFLOW="$REPO_ROOT/.github/workflows/build.yml"
-check "workflow sets up buildx" bash -c "grep -q 'docker/setup-buildx-action' '$WORKFLOW'"
+WORKFLOW="$REPO_ROOT/.gitea/workflows/image.yml"
+check "workflow sets up buildx" bash -c "grep -q 'docker buildx create' '$WORKFLOW'"
 check "workflow reads layer cache from buildcache tag" bash -c \
   "grep -q 'cache-from' '$WORKFLOW' && grep -q 'buildcache' '$WORKFLOW'"
 check "workflow writes layer cache to buildcache tag" bash -c \

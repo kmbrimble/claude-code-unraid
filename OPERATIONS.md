@@ -14,7 +14,7 @@ agent session runs inside when working via the Claude Code CLI MCP connector.
 - GitHub: `kmbrimble/claude-code-unraid`
 - Published image: `ghcr.io/kmbrimble/claude-code-unraid:latest`
 - Live container name: `claude-code`
-- Host: unRAID **7.3.1** at `192.168.0.10` (no `python3` on the host — run Python inside the
+- Host: unRAID at `192.168.0.10` (check the running version with `cat /etc/unraid-version`; it was 7.3.4 on 15 Nov 2026) (no `python3` on the host — run Python inside the
   container, not via host SSH).
 
 ### Mounts
